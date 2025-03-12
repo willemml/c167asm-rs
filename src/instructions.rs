@@ -139,7 +139,7 @@ instructions! {
     CPLB(GPRb) = 0xB1
 
     DISWDT() = 0xA5
-    EINIT() = 0xB5
+    EINIT(EINITs) = 0xB5
     SRVWDT() = 0xA7
     SRST() = 0xB7
     NOP() = 0xCC
@@ -148,6 +148,11 @@ instructions! {
     RETS() = 0xDB
     RETP(Reg) = 0xEB
     RETI() = 0xFB
+
+    EXTR(Irang2) = 0xD1
+
+    EXTreg(EXTRSeq) = 0xDC
+    EXTo(EXTSeq) = 0xD7
 
     Push(Reg) = 0xEC
     Pop(Reg) = 0xFC
@@ -161,6 +166,12 @@ instructions! {
     MovI16R(Indirect16, GPR) = 0xC4
     MovRI16(GPR, Indirect16) = 0xD4
     MovII(Indirect, Indirect) = 0xC8
+    MovRD4(GPR, Data4) = 0xE0
+    MovRD16(GPR, Data16) = 0xE6
+    MovIIi(Indirect, IndirectIncr) = 0xE8
+    MovRR(GPR, GPR) = 0xF0
+    MovRM(Reg, Mem) = 0xF2
+    MovMR(Mem, Reg) = 0xF6
 
     MovBIdR(IndirectDecr, GPRb) = 0x89
     MovBRIi(GPRb, IndirectIncr) = 0x99
@@ -169,6 +180,14 @@ instructions! {
     MovBMI(Mem, Indirect) = 0xB4
     MovBIR(Indirect, GPRb) = 0xB9
     MovBII(Indirect, Indirect) = 0xC9
+    MovBRD4(GPRb, Data4) = 0xE1
+    MovBI16R(Indirect16, GPRb) = 0xE4
+    MovBRD8(Reg, Data8) = 0xE7
+    MovBIIi(Indirect, IndirectIncr) = 0xE9
+    MovBRR(GPRb, GPRb) = 0xF1
+    MovBRM(Reg, Mem) = 0xF3
+    MovBRI16(GPRb, Indirect16) = 0xF4
+    MovBMR(Mem, Reg) = 0xF7
 
     MovBZRRb(GPR, GPRb) = 0xC0
     MovBZRM(Reg, Mem) = 0xC2
@@ -180,6 +199,7 @@ instructions! {
 
     JmpI(ConditionCode, Indirect) = 0x9C
     JmpA(ConditionCode, Caddr) = 0xEA
+    JmpS(Seg, Caddr) = 0xFA
 
     JB(Bitaddr, Rel) = 0x8A
     JNB(Bitaddr, Rel) = 0x9A

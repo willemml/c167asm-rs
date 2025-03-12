@@ -119,6 +119,7 @@ macro_rules! read_44 {
         readable!(4_4: $t, GPR);
         readable!(4_4: GPRb, $t);
         readable!(4_4: $t, GPRb);
+        readable!(4_4: Indirect, $t);
     )*
     };
 }
@@ -143,19 +144,21 @@ mk_address! {
     Irang2(u8),
     Rel(u8),
     Caddr(u16),
-    Trap7(u8)
+    Trap7(u8),
+    Seg(u8),
+    EINITs(())
 }
 
 read_44!(Data4, Special, Indirect, IndirectDecr, IndirectIncr);
 
 readable!(4_4: GPR, GPR);
-readable!(4_4: Indirect, Indirect);
 readable!(4_4: GPR, GPRb);
 readable!(4_4: GPRb, GPRb);
 readable!(4_16: GPR, Mem);
 readable!(4_16: GPR, Data16);
 readable!(8_8: Reg, Data8);
 readable!(8_16: Reg, Mem);
+readable!(8_16: Seg, Caddr);
 readable!(8_16: Reg, Data16);
 readable!(!8_16: Reg, Mem);
 readable!(8_16: Indirect, Mem);
@@ -178,6 +181,26 @@ impl ArgRead for () {
     }
 }
 
+impl EINITs {
+    pub fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> C<EINITs> {
+        let b1 = reader.next().unwrap().unwrap();
+        let b2 = reader.next().unwrap().unwrap();
+        let b3 = reader.next().unwrap().unwrap();
+
+        assert_eq!([b1, b2, b3], [0x4A, 0xB5, 0xB5]);
+
+        C(EINITs(()))
+    }
+}
+
+impl Irang2 {
+    pub fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> C<Self> {
+        let byte = reader.next().unwrap().unwrap();
+
+        C(Irang2((byte & 0b00110000) >> 4))
+    }
+}
+
 impl ArgRead for (Indirect16, GPR) {
     fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> Self {
         let b1 = reader.next().unwrap().unwrap();
@@ -189,6 +212,17 @@ impl ArgRead for (Indirect16, GPR) {
         )
     }
 }
+impl ArgRead for (Indirect16, GPRb) {
+    fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> Self {
+        let b1 = reader.next().unwrap().unwrap();
+        let b2 = reader.next().unwrap().unwrap();
+        let b3 = reader.next().unwrap().unwrap();
+        (
+            Indirect16(b1 & 0x0F, u16::from_le_bytes([b2, b3])),
+            GPRb(b1 >> 4),
+        )
+    }
+}
 impl ArgRead for (GPR, Indirect16) {
     fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> Self {
         let b1 = reader.next().unwrap().unwrap();
@@ -196,6 +230,17 @@ impl ArgRead for (GPR, Indirect16) {
         let b3 = reader.next().unwrap().unwrap();
         (
             GPR(b1 >> 4),
+            Indirect16(b1 & 0x0F, u16::from_le_bytes([b2, b3])),
+        )
+    }
+}
+impl ArgRead for (GPRb, Indirect16) {
+    fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> Self {
+        let b1 = reader.next().unwrap().unwrap();
+        let b2 = reader.next().unwrap().unwrap();
+        let b3 = reader.next().unwrap().unwrap();
+        (
+            GPRb(b1 >> 4),
             Indirect16(b1 & 0x0F, u16::from_le_bytes([b2, b3])),
         )
     }
@@ -254,6 +299,67 @@ pub struct C<T>(pub T);
 pub struct Bitaddr(pub u8, pub u8);
 #[derive(Debug, Clone, Copy)]
 pub struct Indirect16(pub u8, pub u16);
+
+#[repr(u8)]
+#[derive(Debug, Copy, Clone)]
+pub enum EXTRSeq {
+    EXTP(GPR, Irang2) = 0b01,
+    EXTPR(GPR, Irang2) = 0b11,
+    EXTS(GPR, Irang2) = 0b00,
+    EXTSR(GPR, Irang2) = 0b10,
+}
+
+#[repr(u8)]
+#[derive(Debug, Copy, Clone)]
+pub enum EXTSeq {
+    EXTP(Pag10, Irang2) = 0b01,
+    EXTPR(Pag10, Irang2) = 0b11,
+    EXTS(Seg8, Irang2) = 0b00,
+    EXTSR(Seg8, Irang2) = 0b10,
+}
+
+impl EXTSeq {
+    pub fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> C<Self> {
+        let b1 = reader.next().unwrap().unwrap();
+        let b2 = reader.next().unwrap().unwrap();
+        let b3 = reader.next().unwrap().unwrap();
+
+        let mode = b1 >> 6;
+        let irang = Irang2((b1 >> 4) & 0b11);
+        C(if mode & 0b01 == 1 {
+            let pag = Pag10(((b2 as u16) << 2) | b3 as u16);
+            if mode & 0b10 == 0b10 {
+                Self::EXTPR(pag, irang)
+            } else {
+                Self::EXTP(pag, irang)
+            }
+        } else {
+            let seg = Seg8(b2);
+            if mode & 0b10 == 0b10 {
+                Self::EXTSR(seg, irang)
+            } else {
+                Self::EXTS(seg, irang)
+            }
+        })
+    }
+}
+impl EXTRSeq {
+    pub fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> C<Self> {
+        let byte = reader.next().unwrap().unwrap();
+
+        let mode = byte >> 6;
+        let reg = GPR(byte & 0x0F);
+        let irang = Irang2((byte >> 6) & 0b11);
+
+        C(match mode {
+            0b11 => Self::EXTPR(reg, irang),
+            0b10 => Self::EXTSR(reg, irang),
+            0b01 => Self::EXTP(reg, irang),
+            0b00 => Self::EXTS(reg, irang),
+            _ => panic!(),
+        })
+    }
+}
 
 impl From<Bitaddr> for Address {
     fn from(value: Bitaddr) -> Self {
