@@ -33,6 +33,9 @@ macro_rules! mk_address {
         )*
             Bitaddr(u8, u8),
             Indirect16(u8, u16),
+            EXTSeq(EXTSeq),
+            EXTRSeq(EXTRSeq),
+            CC(ConditionCode),
         }
 
         $(
@@ -389,6 +392,21 @@ impl EXTRSeq {
 impl From<Bitaddr> for Address {
     fn from(value: Bitaddr) -> Self {
         Self::Bitaddr(value.0, value.1)
+    }
+}
+impl From<EXTRSeq> for Address {
+    fn from(value: EXTRSeq) -> Self {
+        Self::EXTRSeq(value)
+    }
+}
+impl From<ConditionCode> for Address {
+    fn from(value: ConditionCode) -> Self {
+        Self::CC(value)
+    }
+}
+impl From<EXTSeq> for Address {
+    fn from(value: EXTSeq) -> Self {
+        Self::EXTSeq(value)
     }
 }
 
