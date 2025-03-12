@@ -18,8 +18,9 @@ macro_rules! instructions {
         }
 
         impl Instruction {
-            pub fn read<R: std::io::Read>(reader: &mut std::io::Bytes<R>) -> Self {
-                let byte = reader.next().unwrap().unwrap();
+            pub fn read<R: std::io::Read>(reader: &mut R) -> Self {
+                let mut byte = 0;
+                reader.read_exact(std::slice::from_mut(&mut byte)).unwrap();
                 match byte & 0x0F {
                     0x0D => {
                         Self::JmpR(ConditionCode::from_repr(byte >> 4).unwrap(), Rel::read(reader).0.0)

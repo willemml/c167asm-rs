@@ -1,4 +1,10 @@
-use std::io::Bytes;
+macro_rules! read {
+    ($reader: ident, $n:expr) => {{
+        let mut b = [0u8; $n];
+        $reader.read_exact(&mut b).unwrap();
+        b
+    }};
+}
 
 macro_rules! mk_address {
     {
@@ -28,18 +34,18 @@ macro_rules! mk_address {
 macro_rules! readable {
     ($a:ident, $reader:ident => $code:block) => {
         impl $a {
-            pub fn read<R: std::io::Read>($reader: &mut Bytes<R>) -> C<$a> $code
+            pub fn read<R: std::io::Read>($reader: &mut R) -> C<$a> $code
         }
     };
     (<$a:ident, $b:ident>, $reader:ident => $code:block) => {
         impl ArgRead for ($a, $b) {
-            fn read<R: std::io::Read>($reader: &mut Bytes<R>) -> Self $code
+            fn read<R: std::io::Read>($reader: &mut R) -> Self $code
         }
     };
 
     (4_4: $a:ident, $b:ident) => {
         readable!(<$a, $b>, reader => {
-            let byte = reader.next().unwrap().unwrap();
+            let [byte] = read!(reader, 1);
 
             ($a(byte >> 4), $b(byte & 0x0F))
         });
@@ -47,30 +53,23 @@ macro_rules! readable {
 
     (4_16: $a:ident, $b:ident) => {
         readable!(<$a, $b>, reader => {
-            let b1 = reader.next().unwrap().unwrap();
-            let b2 = reader.next().unwrap().unwrap();
-            let b3 = reader.next().unwrap().unwrap();
+            let b = read!(reader, 3);
 
-            ($a(b1 & 0x0F), $b(u16::from_le_bytes([b2, b3])))
+            ($a(b[0] & 0x0F), $b(u16::from_le_bytes([b[1],b[2]])))
         });
     };
 
     (8_16: $a:ident, $b:ident) => {
         readable!(<$a, $b>, reader => {
-            let b1 = reader.next().unwrap().unwrap();
-            let b2 = reader.next().unwrap().unwrap();
-            let b3 = reader.next().unwrap().unwrap();
+            let b = read!(reader, 3);
 
-            ($a(b1), $b(u16::from_le_bytes([b2, b3])))
+            ($a(b[0]), $b(u16::from_le_bytes([b[1], b[2]])))
         });
     };
     (!8_16: $b:ident, $a:ident) => {
         impl ArgRead for ($a, $b) {
-            fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> Self {
-                let b1 = reader.next().unwrap().unwrap();
-                let b2 = reader.next().unwrap().unwrap();
-                let b3 = reader.next().unwrap().unwrap();
-
+            fn read<R: std::io::Read>(reader: &mut R) -> Self {
+                let [b1,b2,b3] = read!(reader, 3);
                 ($a(u16::from_le_bytes([b2, b3])), $b(b1))
             }
         }
@@ -78,9 +77,7 @@ macro_rules! readable {
 
     (8_8: $a:ident, $b:ident) => {
         readable!(<$a, $b>, reader => {
-            let b1 = reader.next().unwrap().unwrap();
-            let b2 = reader.next().unwrap().unwrap();
-            let _b3 = reader.next().unwrap().unwrap();
+            let [b1,b2,_] = read!(reader, 3);
 
             ($a(b1), $b(b2))
         });
@@ -88,9 +85,7 @@ macro_rules! readable {
 
     (8(4)x2: $a:ident, $b:ident) => {
         readable!(<$a, $b>, reader => {
-            let b1 = reader.next().unwrap().unwrap();
-            let b2 = reader.next().unwrap().unwrap();
-            let b3 = reader.next().unwrap().unwrap();
+            let [b1,b2,b3] = read!(reader, 3);
 
             ($a(b1, b3 >> 4), $b(b2, b3 & 0x0F))
         });
@@ -98,14 +93,14 @@ macro_rules! readable {
 
     (40: $a:ident) => {
         readable!($a, reader => {
-            let byte = reader.next().unwrap().unwrap();
+            let [byte] = read!(reader, 1);
 
             C($a(byte >> 4))
         });
     };
     (8: $a:ident) => {
         readable!($a, reader => {
-            let byte = reader.next().unwrap().unwrap();
+            let [byte] = read!(reader, 1);
 
             C($a(byte))
         });
@@ -171,126 +166,90 @@ readable!(8: Rel);
 readable!(8: Reg);
 readable!(8: Trap7);
 
+macro_rules! read_fn {
+    ($(:$p:vis)? [$($n:ident),*] -> $r:ty $code:block) => {
+        $($p)? fn read<R: std::io::Read>(reader: &mut R) -> $r {
+            let [$($n),*] = read!(reader, ${count($n)});
+
+            $code
+        }
+    };
+}
+
 pub trait ArgRead {
-    fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> Self;
+    fn read<R: std::io::Read>(reader: &mut R) -> Self;
 }
 
 impl ArgRead for () {
-    fn read<R: std::io::Read>(_reader: &mut Bytes<R>) -> Self {
-        ()
-    }
+    read_fn!([_e] -> () {()});
 }
 
 impl EINITs {
-    pub fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> C<EINITs> {
-        let b1 = reader.next().unwrap().unwrap();
-        let b2 = reader.next().unwrap().unwrap();
-        let b3 = reader.next().unwrap().unwrap();
-
-        assert_eq!([b1, b2, b3], [0x4A, 0xB5, 0xB5]);
-
+    read_fn!(:pub [a,b,c] -> C<EINITs> {
+        assert_eq!([a,b,c],[0x4A,0xB5,0xB5]);
         C(EINITs(()))
-    }
+    });
 }
 
 impl Irang2 {
-    pub fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> C<Self> {
-        let byte = reader.next().unwrap().unwrap();
-
+    read_fn!(:pub [byte] -> C<Self> {
         C(Irang2((byte & 0b00110000) >> 4))
-    }
+    });
 }
 
 impl ArgRead for (Indirect16, GPR) {
-    fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> Self {
-        let b1 = reader.next().unwrap().unwrap();
-        let b2 = reader.next().unwrap().unwrap();
-        let b3 = reader.next().unwrap().unwrap();
-        (
-            Indirect16(b1 & 0x0F, u16::from_le_bytes([b2, b3])),
-            GPR(b1 >> 4),
-        )
-    }
+    read_fn!([b1,b2,b3] -> Self {(
+        Indirect16(b1 & 0x0F, u16::from_le_bytes([b2, b3])),
+        GPR(b1 >> 4),
+    )});
 }
 impl ArgRead for (Indirect16, GPRb) {
-    fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> Self {
-        let b1 = reader.next().unwrap().unwrap();
-        let b2 = reader.next().unwrap().unwrap();
-        let b3 = reader.next().unwrap().unwrap();
-        (
-            Indirect16(b1 & 0x0F, u16::from_le_bytes([b2, b3])),
-            GPRb(b1 >> 4),
-        )
-    }
+    read_fn!([b1,b2,b3] -> Self {(
+        Indirect16(b1 & 0x0F, u16::from_le_bytes([b2, b3])),
+        GPRb(b1 >> 4),
+    )});
 }
 impl ArgRead for (GPR, Indirect16) {
-    fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> Self {
-        let b1 = reader.next().unwrap().unwrap();
-        let b2 = reader.next().unwrap().unwrap();
-        let b3 = reader.next().unwrap().unwrap();
-        (
-            GPR(b1 >> 4),
-            Indirect16(b1 & 0x0F, u16::from_le_bytes([b2, b3])),
-        )
-    }
+    read_fn!([b1,b2,b3] -> Self {(
+        GPR(b1 >> 4),
+        Indirect16(b1 & 0x0F, u16::from_le_bytes([b2, b3])),
+    )});
 }
 impl ArgRead for (GPRb, Indirect16) {
-    fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> Self {
-        let b1 = reader.next().unwrap().unwrap();
-        let b2 = reader.next().unwrap().unwrap();
-        let b3 = reader.next().unwrap().unwrap();
-        (
-            GPRb(b1 >> 4),
-            Indirect16(b1 & 0x0F, u16::from_le_bytes([b2, b3])),
-        )
-    }
+    read_fn!([b1,b2,b3] -> Self {(
+        GPRb(b1 >> 4),
+        Indirect16(b1 & 0x0F, u16::from_le_bytes([b2, b3])),
+    )});
 }
 
 impl ArgRead for (Bitoff, Mask8, Data8) {
-    fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> Self {
-        let b1 = reader.next().unwrap().unwrap();
-        let b2 = reader.next().unwrap().unwrap();
-        let b3 = reader.next().unwrap().unwrap();
+    read_fn!([b1,b2,b3] -> Self {
         (Bitoff(b1), Mask8(b2), Data8(b3))
-    }
+    });
 }
 
 impl ArgRead for (ConditionCode, IndirectIncr) {
-    fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> Self {
-        let byte = reader.next().unwrap().unwrap();
-        (
-            ConditionCode::from_repr(byte >> 4).unwrap(),
-            IndirectIncr(byte & 0x0F),
-        )
-    }
+    read_fn!([byte] -> Self {(
+        ConditionCode::from_repr(byte >> 4).unwrap(),
+        IndirectIncr(byte & 0x0F),
+    )});
 }
 impl ArgRead for (ConditionCode, Indirect) {
-    fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> Self {
-        let byte = reader.next().unwrap().unwrap();
-        (
-            ConditionCode::from_repr(byte >> 4).unwrap(),
-            Indirect(byte & 0x0F),
-        )
-    }
+    read_fn!([byte] -> Self {(
+        ConditionCode::from_repr(byte >> 4).unwrap(),
+        Indirect(byte & 0x0F),
+    )});
 }
 impl ArgRead for (ConditionCode, Caddr) {
-    fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> Self {
-        let b1 = reader.next().unwrap().unwrap();
-        let b2 = reader.next().unwrap().unwrap();
-        let b3 = reader.next().unwrap().unwrap();
-        (
-            ConditionCode::from_repr(b1 >> 4).unwrap(),
-            Caddr(u16::from_le_bytes([b2, b3])),
-        )
-    }
+    read_fn!([b1, b2, b3] -> Self {(
+        ConditionCode::from_repr(b1 >> 4).unwrap(),
+        Caddr(u16::from_le_bytes([b2, b3])),
+    )});
 }
 impl ArgRead for (Bitaddr, Rel) {
-    fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> Self {
-        let b1 = reader.next().unwrap().unwrap();
-        let b2 = reader.next().unwrap().unwrap();
-        let b3 = reader.next().unwrap().unwrap();
+    read_fn!([b1,b2,b3] -> Self {
         (Bitaddr(b1, b3 >> 4), Rel(b2))
-    }
+    });
 }
 
 pub struct C<T>(pub T);
@@ -319,11 +278,7 @@ pub enum EXTSeq {
 }
 
 impl EXTSeq {
-    pub fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> C<Self> {
-        let b1 = reader.next().unwrap().unwrap();
-        let b2 = reader.next().unwrap().unwrap();
-        let b3 = reader.next().unwrap().unwrap();
-
+    read_fn!(:pub [b1,b2,b3] -> C<Self> {
         let mode = b1 >> 6;
         let irang = Irang2((b1 >> 4) & 0b11);
         C(if mode & 0b01 == 1 {
@@ -341,12 +296,10 @@ impl EXTSeq {
                 Self::EXTS(seg, irang)
             }
         })
-    }
+    });
 }
 impl EXTRSeq {
-    pub fn read<R: std::io::Read>(reader: &mut Bytes<R>) -> C<Self> {
-        let byte = reader.next().unwrap().unwrap();
-
+    read_fn!(:pub [byte] -> C<Self> {
         let mode = byte >> 6;
         let reg = GPR(byte & 0x0F);
         let irang = Irang2((byte >> 6) & 0b11);
@@ -358,7 +311,7 @@ impl EXTRSeq {
             0b00 => Self::EXTS(reg, irang),
             _ => panic!(),
         })
-    }
+    });
 }
 
 impl From<Bitaddr> for Address {
