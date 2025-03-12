@@ -1,7 +1,7 @@
 use crate::addressing::*;
 
 macro_rules! instructions {
-    {$($name:ident($($at:ty),*) = $num:expr)*} => {
+    {$($name:ident($($an:ident: $at:ty),*) = $num:expr)*} => {
         #[repr(u8)]
         #[derive(Debug, Copy, Clone, strum::FromRepr)]
         pub enum OpCode {
@@ -42,24 +42,59 @@ macro_rules! instructions {
                     }
                 }
             }
+            pub fn write<W: std::io::Write>(&self, writer: &mut W) {
+                match self {
+                    Self::JmpR(cc, rel) => {
+                        writer.write(&[0x0D | ((*cc as u8) << 4), *rel]).unwrap();
+                    }
+                    Self::Bclr(bitoff, bit) => {
+                        writer.write(&[0x0E | (*bit << 4), bitoff.0]).unwrap();
+                    }
+                    Self::Bset(bitoff, bit) => {
+                        writer.write(&[0x0F | (*bit << 4), bitoff.0]).unwrap();
+                    }
+                    $(
+                        #[allow(non_snake_case)]
+                        Self::$name($($an),*) => {
+                            writer.write(&[OpCode::$name as u8]).unwrap();
+                            ($(*$an),*).write(writer);
+                        }
+                    )*
+                }
+            }
         }
     };
 
     {
         $($specn:ident = $start:expr),*
         ;
-        $($name:ident($($at:ty),*) = $num:expr)*
+        $($single:ident = $ss:expr)*
+        ;
+        $($name1:ident($at1:ty) = $num1:expr)*
+        ;
+        $($name2:ident($at2:ty, $bt2:ty) = $num2:expr)*
+        ;
+        $($name3:ident($at3:ty, $bt3:ty, $ct3:ty) = $num3:expr)*
     } => {
         instructions! {
         $(
-            ${concat($specn,RR)}(GPR, GPR) = 0x00 + $start
-            ${concat($specn,RS)}(Reg, Mem) = 0x02 + $start
-            ${concat($specn,RD)}(Mem, Reg) = 0x04 + $start
-            ${concat($specn,RM)}(Reg, Data16) = 0x06 + $start
-            ${concat($specn,MR)}(GPR, Special) = 0x08 + $start
+            ${concat($specn,RR)}(a: GPR, b: GPR) = 0x00 + $start
+            ${concat($specn,RS)}(a: Reg, b: Mem) = 0x08 + $start
+            ${concat($specn,RD)}(a: Mem, b: Reg) = 0x06 + $start
+            ${concat($specn,RM)}(a: Reg, b: Data16) = 0x02 + $start
+            ${concat($specn,MR)}(a: GPR, b: Special) = 0x04 + $start
         )*
         $(
-            $name($($at),*) = $num
+            $single() = $ss
+        )*
+        $(
+            $name1(a: $at1) = $num1
+        )*
+        $(
+            $name2(a: $at2, b: $bt2) = $num2
+        )*
+        $(
+            $name3(a: $at3, b: $bt3, c: $ct3) = $num3
         )*
         }
     }
@@ -83,6 +118,43 @@ instructions! {
     Cmp = 0x40,
     CmpB = 0x41
     ;
+    DISWDT = 0xA5
+    SRVWDT = 0xA7
+    SRST = 0xB7
+    NOP = 0xCC
+
+    RET = 0xCB
+    RETS = 0xDB
+    RETI = 0xFB
+
+    ;
+
+    Div(GPR) = 0x4B
+    Divu(GPR) = 0x5B
+
+    Divl(GPR) = 0x6B
+    Divlu(GPR) = 0x7B
+    NegB(GPRb) = 0xA1
+    Neg(GPR) = 0x81
+
+    CPL(GPR) = 0x91
+    CPLB(GPRb) = 0xB1
+
+    EINIT(EINITs) = 0xB5
+    RETP(Reg) = 0xEB
+    EXTR(Irang2) = 0xD1
+
+    EXTreg(EXTRSeq) = 0xDC
+    EXTo(EXTSeq) = 0xD7
+
+    Push(Reg) = 0xEC
+    Pop(Reg) = 0xFC
+    Trap(Trap7) = 0x9B
+
+    CallR(Rel) = 0xBB
+
+    ;
+
     AshrRR(GPR, GPR) = 0xAC
     AshrRD(GPR, Data4) = 0xBC
 
@@ -105,12 +177,6 @@ instructions! {
     Band(Bitaddr, Bitaddr) = 0x6A
     Bxor(Bitaddr, Bitaddr) = 0x7A
 
-    Div(GPR) = 0x4B
-    Divu(GPR) = 0x5B
-
-    Divl(GPR) = 0x6B
-    Divlu(GPR) = 0x7B
-
     ShlRR(GPR, GPR) = 0x4C
     ShlRD(GPR, Data4) = 0x5C
 
@@ -132,31 +198,6 @@ instructions! {
     Cmpd2RD4(GPR, Data4) = 0xB0
     Cmpd2RM(GPR, Mem) = 0xB2
     Cmpd2(GPR, Data16) = 0xB6
-
-    NegB(GPRb) = 0xA1
-    Neg(GPR) = 0x81
-
-    CPL(GPR) = 0x91
-    CPLB(GPRb) = 0xB1
-
-    DISWDT() = 0xA5
-    EINIT(EINITs) = 0xB5
-    SRVWDT() = 0xA7
-    SRST() = 0xB7
-    NOP() = 0xCC
-
-    RET() = 0xCB
-    RETS() = 0xDB
-    RETP(Reg) = 0xEB
-    RETI() = 0xFB
-
-    EXTR(Irang2) = 0xD1
-
-    EXTreg(EXTRSeq) = 0xDC
-    EXTo(EXTSeq) = 0xD7
-
-    Push(Reg) = 0xEC
-    Pop(Reg) = 0xFC
 
     MovIM(Indirect, Mem) = 0x84
     MovIdR(IndirectDecr, GPR) = 0x88
@@ -195,9 +236,6 @@ instructions! {
     MovBZMR(Mem, Reg) = 0xC5
 
     SCXT(Reg, Data16) = 0xC6
-
-    Trap(Trap7) = 0x9B
-
     JmpI(ConditionCode, Indirect) = 0x9C
     JmpA(ConditionCode, Caddr) = 0xEA
     JmpS(Seg, Caddr) = 0xFA
@@ -208,8 +246,9 @@ instructions! {
     JNBS(Bitaddr, Rel) = 0xBA
 
     CallI(ConditionCode, Indirect) = 0xAB
-    CallR(Rel) = 0xBB
     CallA(ConditionCode, Caddr) = 0xCA
+
+    ;
 
     BFLDL(Bitoff, Mask8, Data8) = 0x0A
     BFLDH(Bitoff, Mask8, Data8) = 0x1A

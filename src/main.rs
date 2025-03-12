@@ -12,8 +12,18 @@ fn main() {
     println!("Hello, world!");
 
     let mut file = OpenOptions::new().read(true).open("test.bin").unwrap();
+    let mut output = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open("write.bin")
+        .unwrap();
 
     loop {
-        println!("{:02x?}", Instruction::read(&mut file));
+        let instr = Instruction::read(&mut file);
+        let mut bytes = Vec::with_capacity(4);
+        instr.write(&mut bytes);
+        println!("{:02x?}: {:02x?}", bytes, instr);
+
+        instr.write(&mut output);
     }
 }
