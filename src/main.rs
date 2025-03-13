@@ -11,8 +11,20 @@ pub mod instructions;
 fn main() {
     let mut file = OpenOptions::new().read(true).open("test.bin").unwrap();
 
+    let mut write = OpenOptions::new()
+        .write(true)
+        .append(false)
+        .create(true)
+        .open("write.bin")
+        .unwrap();
+
     loop {
-        let instr = Operation::from(Instruction::read(&mut file));
+        let op = Operation::from(Instruction::read(&mut file));
+
+        println!("{:02x?}", op);
+
+        let instr = Instruction::from(op);
         println!("{:02x?}", instr);
+        instr.write(&mut write);
     }
 }

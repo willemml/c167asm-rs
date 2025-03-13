@@ -1,13 +1,34 @@
 use crate::addressing::*;
 
 macro_rules! instructions {
-    {$($group:ident($($arg:ident),*) {$($name:ident($($an:ident: $at:ty),*) = $num:expr)*})*} => {
+    {$($group:ident($($arg:ident),*) {$($name:ident($($an:ident: $at:ty),*) = $num:expr $(,$ext:literal)*)*})*} => {
         #[derive(Debug, Copy, Clone)]
         pub enum Operation {
             $($group($(${ignore($arg)} Address),*),)*
             JmpR(ConditionCode, u8),
             Bclr(Bitoff, u8),
             Bset(Bitoff, u8),
+        }
+
+        impl From<Operation> for Instruction {
+            fn from(value: Operation) -> Self {
+                match value {
+                    Operation::JmpR(cc, n) => Self::JmpR(cc,n),
+                    Operation::Bclr(cc, n) => Self::Bclr(cc,n),
+                    Operation::Bset(cc, n) => Self::Bset(cc,n),
+                    $(
+                      Operation::$group($($arg),*) => {
+                          #[allow(irrefutable_let_patterns)]
+                          #[allow(unused_parens)]
+                          $(if let ($(Ok($an)),*) = ($(<$at>::try_from($an)),*) {
+                              Instruction::$name($($an),*)
+                          } else)* {
+                              panic!()
+                          }
+                      }
+                    )*
+                }
+            }
         }
 
         impl From<Instruction> for Operation {
@@ -26,7 +47,7 @@ macro_rules! instructions {
 
         #[repr(u8)]
         #[derive(Debug, Copy, Clone, strum::FromRepr)]
-        pub enum OpCode {
+        enum OpCode {
             $($($name = $num,)*)*
         }
 
@@ -59,6 +80,11 @@ macro_rules! instructions {
                             #[allow(unused_parens)]
                             let read = <($($at),*)>::read(reader);
 
+                            #[allow(unused_variables)]
+                            let mut extra: [u8; ${count($ext)}] = [$(0u8 ${ignore($ext)}),*];
+
+                            reader.read_exact(&mut extra).unwrap();
+
                             Self::$name($(${ignore($at)} read.${index()}),*)
                         })*)*
                     }
@@ -67,18 +93,18 @@ macro_rules! instructions {
             pub fn write<W: std::io::Write>(&self, writer: &mut W) {
                 match self {
                     Self::JmpR(cc, rel) => {
-                        writer.write(&[0x0D | ((*cc as u8) << 4), *rel]).unwrap();
+                        writer.write(&[0x0D | (*cc as u8) << 4, *rel]).unwrap();
                     }
                     Self::Bclr(bitoff, bit) => {
-                        writer.write(&[0x0E | (*bit << 4), bitoff.0]).unwrap();
+                        writer.write(&[0x0E | *bit << 4, bitoff.0]).unwrap();
                     }
                     Self::Bset(bitoff, bit) => {
-                        writer.write(&[0x0F | (*bit << 4), bitoff.0]).unwrap();
+                        writer.write(&[0x0F | *bit << 4, bitoff.0]).unwrap();
                     }
                     $($(
                         #[allow(non_snake_case)]
                         Self::$name($($an),*) => {
-                            writer.write(&[OpCode::$name as u8]).unwrap();
+                            writer.write(&[OpCode::$name as u8 $(,$ext)*]).unwrap();
                             ($(*$an),*).write(writer);
                         }
                     )*)*
@@ -90,7 +116,7 @@ macro_rules! instructions {
     {
         $($specn:ident = $start:expr)*
         ;
-        $($single:ident = $ss:expr)*
+        $($single:ident = $ss:expr $(,$ext:literal)*)*
         ;
         $($name1:ident($at1:ty) = $num1:expr)*
         ;
@@ -112,7 +138,7 @@ macro_rules! instructions {
             ${concat($specn,MR)}(a: GPR, b: Special) = 0x04 + $start
         })*
         $($single() {
-            $single() = $ss
+            $single() = $ss $(,$ext)*
         })*
         $($name1(a) {
             $name1(a: $at1) = $num1
@@ -147,14 +173,21 @@ instructions! {
     XorB = 0x51
 
     ;
-    DISWDT = 0xA5
-    NOP = 0xCC
-    RET = 0xCB
-    RETI = 0xFB
-    RETS = 0xDB
-    SRST = 0xB7
-    SRVWDT = 0xA7
+
+    DISWDT = 0xA5, 0x5A, 0xA5, 0xA5
+    EINIT = 0xB5, 0x4A, 0xB5, 0xB5
+    IDLE = 0x87, 78, 87, 87
+    NOP = 0xCC, 0x00
+    PWRDN = 0x97, 0x68, 0x97, 0x97
+    RET = 0xCB, 0x00
+    RETI = 0xFB, 0x88
+    RETS = 0xDB, 0x00
+    SRST = 0xB7, 0x48, 0xB7, 0xB7
+    SRVWDT = 0xA7, 0x58, 0xA7, 0xA7
+
     ;
+
+    AtEx(AtEx) = 0xD1
     CallR(Rel) = 0xBB
     CPLB(GPRb) = 0xB1
     CPL(GPR) = 0x91
@@ -162,17 +195,17 @@ instructions! {
     Divl(GPR) = 0x6B
     Divlu(GPR) = 0x7B
     Divu(GPR) = 0x5B
-    EINIT(EINITs) = 0xB5
     EXTo(EXTSeq) = 0xD7
     EXTreg(EXTRSeq) = 0xDC
-    EXTR(Irang2) = 0xD1
     NegB(GPRb) = 0xA1
     Neg(GPR) = 0x81
     Pop(Reg) = 0xFC
     Push(Reg) = 0xEC
     RETP(Reg) = 0xEB
     Trap(Trap7) = 0x9B
+
     ;
+
     Ashr {
         AshrRD(GPR, Data4) = 0xBC
         AshrRR(GPR, GPR) = 0xAC

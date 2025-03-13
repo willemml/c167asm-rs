@@ -36,6 +36,7 @@ macro_rules! mk_address {
             EXTSeq(EXTSeq),
             EXTRSeq(EXTRSeq),
             CC(ConditionCode),
+            AtEx(AtEx),
         }
 
         $(
@@ -45,6 +46,18 @@ macro_rules! mk_address {
         impl From<$name> for Address {
             fn from(value: $name) -> Self {
                 Self::$name(value.0)
+            }
+        }
+
+        impl TryFrom<Address> for $name {
+            type Error = ();
+
+            fn try_from(value: Address) -> Result<Self, Self::Error> {
+                if let Address::$name(v) = value {
+                    Ok(Self(v))
+                } else {
+                    Err(())
+                }
             }
         }
         )*
@@ -166,8 +179,7 @@ mk_address! {
     Rel(u8),
     Caddr(u16),
     Trap7(u8),
-    Seg(u8),
-    EINITs(())
+    Seg(u8)
 }
 
 read_44!(Data4, Special, Indirect, IndirectDecr, IndirectIncr);
@@ -198,19 +210,11 @@ pub trait Arg {
 }
 
 impl Arg for () {
-    read_fn!([_e] -> () {()});
+    fn read<R: std::io::Read>(_reader: &mut R) -> Self {
+        ()
+    }
 
-    write_fn!(self => {[0]});
-}
-
-impl EINITs {
-    read_fn!(:pub [a,b,c] -> C<EINITs> {
-        assert_eq!([a,b,c],[0x4A,0xB5,0xB5]);
-        C(EINITs(()))
-    });
-    write_fn!(:pub self => {
-        [0x4A, 0xB5, 0xB5]
-    });
+    fn write<W: std::io::Write>(&self, _writer: &mut W) {}
 }
 
 impl Irang2 {
@@ -318,6 +322,13 @@ pub struct Indirect16(pub u8, pub u16);
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone)]
+pub enum AtEx {
+    Atomic(Irang2),
+    EXTR(Irang2),
+}
+
+#[repr(u8)]
+#[derive(Debug, Copy, Clone)]
 pub enum EXTRSeq {
     EXTP(GPR, Irang2) = 0b01,
     EXTPR(GPR, Irang2) = 0b11,
@@ -332,6 +343,23 @@ pub enum EXTSeq {
     EXTPR(Pag10, Irang2) = 0b11,
     EXTS(Seg8, Irang2) = 0b00,
     EXTSR(Seg8, Irang2) = 0b10,
+}
+
+impl AtEx {
+    read_fn!(:pub [byte] -> C<Self> {
+        C(if byte >> 7 == 1 {
+            Self::EXTR(Irang2(byte >> 4 & 0b11))
+        } else {
+            Self::Atomic(Irang2(byte >> 4))
+        })
+    });
+
+    write_fn!(:pub self => {
+        [match self {
+            AtEx::EXTR(irang2) => irang2.0 << 4 | 0b10000000,
+            AtEx::Atomic(irang2) => irang2.0 << 4,
+        }]
+    });
 }
 
 impl EXTSeq {
@@ -389,6 +417,62 @@ impl EXTRSeq {
     });
 }
 
+macro_rules! try_from_addr {
+    ($t:ident, $($arg:ident),*) => {
+        try_from_addr!(value: $t -> {
+            if let Address::$t($($arg),*) = value {
+                Ok(Self($($arg),*))
+            } else {
+                Err(())
+            }
+        });};
+    ($value:ident: $t:ident -> $code:block) => {
+        impl TryFrom<Address> for $t {
+            type Error = ();
+
+            fn try_from($value: Address) -> Result<Self, Self::Error> $code
+        }
+
+    };
+}
+
+try_from_addr!(Indirect16, a, b);
+try_from_addr!(Bitaddr, a, b);
+
+try_from_addr!(val: AtEx -> {
+    if let Address::AtEx (v) = val {
+        Ok(v)
+    } else {
+        Err(())
+    }
+});
+try_from_addr!(val: EXTRSeq -> {
+    if let Address::EXTRSeq(v) = val {
+        Ok(v)
+    } else {
+        Err(())
+    }
+});
+try_from_addr!(val: EXTSeq -> {
+    if let Address::EXTSeq(v) = val {
+        Ok(v)
+    } else {
+        Err(())
+    }
+});
+try_from_addr!(val: ConditionCode -> {
+    if let Address::CC(v) = val {
+        Ok(v)
+    } else {
+        Err(())
+    }
+});
+
+impl From<AtEx> for Address {
+    fn from(value: AtEx) -> Self {
+        Self::AtEx(value)
+    }
+}
 impl From<Bitaddr> for Address {
     fn from(value: Bitaddr) -> Self {
         Self::Bitaddr(value.0, value.1)
