@@ -199,7 +199,7 @@ instructions! {
 
     AtEx(AtEx) = 0xD1
     CallR(Rel) = 0xBB
-    CPLB(GPRb) = 0xB1
+    CPLB(GPR) = 0xB1
     CPL(GPR) = 0x91
     Div(GPR) = 0x4B
     Divl(GPR) = 0x6B
@@ -207,7 +207,7 @@ instructions! {
     Divu(GPR) = 0x5B
     EXTo(EXTSeq) = 0xD7
     EXTreg(EXTRSeq) = 0xDC
-    NegB(GPRb) = 0xA1
+    NegB(GPR) = 0xA1
     Neg(GPR) = 0x81
     Pop(Reg) = 0xFC
     Push(Reg) = 0xEC
@@ -242,26 +242,26 @@ instructions! {
         Cmpi2M(GPR, Mem) = 0x92
     }
     MovB {
-        MovBI16R(Indirect16, GPRb) = 0xE4
-        MovBIdR(IndirectDecr, GPRb) = 0x89
+        MovBI16R(Indirect16, GPR) = 0xE4
+        MovBIdR(IndirectDecr, GPR) = 0x89
         MovBIIi(Indirect, IndirectIncr) = 0xE9
         MovBII(Indirect, Indirect) = 0xC9
         MovBIM(Indirect, Mem) = 0xA4
-        MovBIR(Indirect, GPRb) = 0xB9
+        MovBIR(Indirect, GPR) = 0xB9
         MovBMI(Mem, Indirect) = 0xB4
         MovBMR(Mem, Reg) = 0xF7
-        MovBRD4(GPRb, Data4) = 0xE1
+        MovBRD4(GPR, Data4) = 0xE1
         MovBRD8(Reg, Data8) = 0xE7
-        MovBRI16(GPRb, Indirect16) = 0xF4
-        MovBRI(GPRb, Indirect) = 0xA9
-        MovBRIi(GPRb, IndirectIncr) = 0x99
+        MovBRI16(GPR, Indirect16) = 0xF4
+        MovBRI(GPR, Indirect) = 0xA9
+        MovBRIi(GPR, IndirectIncr) = 0x99
         MovBRM(Reg, Mem) = 0xF3
-        MovBRR(GPRb, GPRb) = 0xF1
+        MovBRR(GPR, GPR) = 0xF1
     }
     MovBZ {
         MovBZMR(Mem, Reg) = 0xC5
         MovBZRM(Reg, Mem) = 0xC2
-        MovBZRRb(GPR, GPRb) = 0xC0
+        MovBZRRb(GPR, GPR) = 0xC0
     }
     Mov {
         MovI16R(Indirect16, GPR) = 0xC4

@@ -163,8 +163,6 @@ macro_rules! read_44 {
     $(
         read_write!(4_4: GPR, $t);
         read_write!(4_4: $t, GPR);
-        read_write!(4_4: GPRb, $t);
-        read_write!(4_4: $t, GPRb);
         read_write!(4_4: Indirect, $t);
     )*
     };
@@ -172,7 +170,6 @@ macro_rules! read_44 {
 
 mk_address! {
     GPR(u8),
-    GPRb(u8),
     Indirect(u8),
     IndirectIncr(u8),
     IndirectDecr(u8),
@@ -197,8 +194,6 @@ mk_address! {
 read_44!(Data4, Special, Indirect, IndirectDecr, IndirectIncr);
 
 read_write!(4_4: GPR, GPR);
-read_write!(4_4: GPR, GPRb);
-read_write!(4_4: GPRb, GPRb);
 read_write!(4_16: GPR, Mem);
 read_write!(4_16: GPR, Data16);
 read_write!(8_8: Reg, Data8);
@@ -210,7 +205,6 @@ read_write!(8_16: Indirect, Mem);
 read_write!(!8_16: Indirect, Mem);
 read_write!(8(4)x2: Bitaddr, Bitaddr);
 read_write!(8: GPR);
-read_write!(8: GPRb);
 read_write!(8: Bitoff);
 read_write!(8: Rel);
 read_write!(8: Reg);
@@ -253,32 +247,11 @@ impl Arg for (Indirect16, GPR) {
         [(self.1.0 << 4) | self.0.0, b[0], b[1]]
     });
 }
-impl Arg for (Indirect16, GPRb) {
-    type S = Self;
-    read_fn!([b1,b2,b3] -> Self {(
-        Indirect16(b1 & 0x0F, u16::from_le_bytes([b2, b3])),
-        GPRb(b1 >> 4),
-    )});
-    write_fn!(self => {
-        let b = self.0.1.to_le_bytes();
-        [(self.1.0 << 4) | self.0.0, b[0], b[1]]
-    });
-}
+
 impl Arg for (GPR, Indirect16) {
     type S = Self;
     read_fn!([b1,b2,b3] -> Self {(
         GPR(b1 >> 4),
-        Indirect16(b1 & 0x0F, u16::from_le_bytes([b2, b3])),
-    )});
-    write_fn!(self => {
-        let b = self.1.1.to_le_bytes();
-        [(self.0.0 << 4) | self.1.0, b[0], b[1]]
-    });
-}
-impl Arg for (GPRb, Indirect16) {
-    type S = Self;
-    read_fn!([b1,b2,b3] -> Self {(
-        GPRb(b1 >> 4),
         Indirect16(b1 & 0x0F, u16::from_le_bytes([b2, b3])),
     )});
     write_fn!(self => {
