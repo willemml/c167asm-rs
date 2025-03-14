@@ -7,6 +7,111 @@ use crate::instructions::*;
 use crate::registers;
 use crate::registers::SpecialFunctionRegister;
 
+macro_rules! mk_write_fn {
+    ($type:ident, $t:ty) => {
+        // TODO: allow for EXT addressing overrides
+        // TODO: split into separate functions for bytewise and wordwise addresses
+        pub fn ${concat(write_address_,$type)}<const N: u16>(&mut self, address: Address, val: $t) -> Result {
+            match address {
+                Address::GPR(a) => self.${concat(write_gpr_, $type)}(a, val),
+                Address::Indirect(a) => self.${concat(write_dpp_addressed_, $type)}(self.read_gpr_word(a), val),
+                Address::IndirectIncr(a) => {
+                    let gpr = self.read_gpr_word(a);
+
+                    // TODO: not sure if this is correct...
+                    self.write_gpr_word(a, (Wrapping(gpr) + Wrapping(N)).0);
+
+                    self.${concat(write_dpp_addressed_, $type)}(gpr, val)
+                }
+                Address::IndirectDecr(a) => {
+                    let gpr = self.read_gpr_word(a);
+
+                    // TODO: not sure if this is correct...
+                    self.write_gpr_word(a, (Wrapping(gpr) - Wrapping(N)).0);
+
+                    self.${concat(write_dpp_addressed_, $type)}(gpr, val)
+                }
+                Address::Mem(a) => self.${concat(write_dpp_addressed_, $type)}(a, val),
+                Address::Reg(a) => {
+                    if 0xF0 & a == 0xF0 {
+                        self.${concat(write_gpr_, $type)}(a, val)
+                    } else {
+                        // TODO: handle ESFR
+                        self.${concat(write_, $type)}(registers::sfr_addr_from_byte(a).unwrap_or(0), val)
+                    }
+                }
+                Address::Bitaddr(addr, bit) => {
+                    let word = self.${concat(read_, $type)}(addr as usize) & (0xFF ^ (1 << bit));
+
+                    self.${concat(write_, $type)}(addr as usize, word | ((val & 1) << bit));
+                }
+                Address::Indirect16(a, c) => {
+                    self.${concat(write_dpp_addressed_, $type)}(self.read_gpr_word(a) + c, val);
+                }
+                _ => return Err(Error::NotWriteable),
+            }
+            Ok(())
+        }
+    };
+}
+macro_rules! mk_read_fn {
+    ($type:ident, $t:ty) => {
+        pub fn ${concat(read_address_, $type)}<const N: u16>(&mut self, address: Address) -> Result<$t, Error> {
+            Ok(match address {
+                Address::GPR(a) => self.${concat(read_gpr_, $type)}(a),
+                Address::Indirect(a) => self.${concat(read_dpp_addressed_, $type)}(self.read_gpr_word(a)),
+                Address::IndirectIncr(a) => {
+                    let gpr = self.read_gpr_word(a);
+
+                    // TODO: not sure if this is correct...
+                    self.write_gpr_word(a, (Wrapping(gpr) + Wrapping(N)).0);
+                    self.${concat(read_dpp_addressed_, $type)}(gpr)
+                }
+                Address::IndirectDecr(a) => {
+                    let gpr = self.read_gpr_word(a);
+
+                    // TODO: not sure if this is correct...
+                    self.write_gpr_word(a, (Wrapping(gpr) - Wrapping(N)).0);
+
+                    self.${concat(read_dpp_addressed_, $type)}(gpr)
+                }
+                Address::Data16(a) => a as $t,
+                Address::Data8(a) => a as $t,
+                Address::Data4(a) => a as $t,
+                Address::Data3(a) => a as $t,
+                Address::Mem(a) => self.${concat(read_dpp_addressed_, $type)}(a),
+                Address::Reg(a) => {
+                    if 0xF0 & a == 0xF0 {
+                        self.${concat(read_gpr_, $type)}(a)
+                    } else {
+                        // TODO: handle ESFR
+                        self.${concat(read_, $type)}(registers::sfr_addr_from_byte(a).unwrap_or(0))
+                    }
+                }
+                Address::Special(s) => {
+                    let mode = s >> 3;
+
+                    if mode == 0 {
+                        s as $t
+                    } else {
+                        let gpr = s & 0b11;
+                        let v = self.read_gpr_word(gpr);
+                        if (s >> 2) & 0b01 == 1 {
+                            self.write_gpr_word(gpr, v + N);
+                        }
+                        self.${concat(read_dpp_addressed_, $type)}(v)
+                    }
+                }
+                Address::Bitaddr(addr, bit) => (self.${concat(read_, $type)}(addr as usize) >> bit) & 1,
+                Address::Indirect16(a, c) => {
+                    self.${concat(read_dpp_addressed_, $type)}(self.read_gpr_word(a) + c)
+                }
+                _ => return Err(Error::NotReadable),
+            })
+        }
+    };
+}
+
 pub struct Interpreter {
     pub memory: Vec<u8>,
     instruction_pointer: u16,
@@ -31,24 +136,24 @@ impl Interpreter {
 
             println!("{:04x}: {:02x?}", self.instruction_pointer, op);
             match op {
-                Operation::Add(a, b) => println!(
-                    "  a: 0x{:04x}, b: 0x{:04x}",
-                    self.read_address::<1>(a)?,
-                    self.read_address::<1>(b)?
-                ),
+                Operation::Add(a, b) => {
+                    let a_initial = self.read_address_word::<2>(a)?;
+                    let b_val = self.read_address_word::<2>(b)?;
+                    self.write_address_word::<2>(a, a_initial + b_val)?;
+                }
                 Operation::SubCB(a, b) => println!(
                     "  a: 0x{:04x}, b: 0x{:04x}",
-                    self.read_address::<1>(a)?,
-                    self.read_address::<1>(b)?
+                    self.read_address_word::<1>(a)?,
+                    self.read_address_word::<1>(b)?
                 ),
                 Operation::OrB(a, b) => println!(
                     "  a: 0x{:04x}, b: 0x{:04x}",
-                    self.read_address::<1>(a)?,
-                    self.read_address::<1>(b)?
+                    self.read_address_word::<1>(a)?,
+                    self.read_address_word::<1>(b)?
                 ),
                 Operation::Mov(a, b) => {
-                    let w = self.read_address::<1>(b)?;
-                    self.write_address::<1>(a, w)?
+                    let w = self.read_address_word::<1>(b)?;
+                    self.write_address_word::<1>(a, w)?
                 }
                 _ => {}
             }
@@ -103,6 +208,9 @@ impl Interpreter {
     pub fn read_dpp_addressed_word(&self, address: u16) -> u16 {
         self.read_word(self.get_dpp_address(address))
     }
+    pub fn read_dpp_addressed_byte(&self, address: u16) -> u8 {
+        self.read_byte(self.get_dpp_address(address))
+    }
 
     pub fn get_dpp_address(&self, address: u16) -> usize {
         let dpp = match address >> 14 {
@@ -120,6 +228,9 @@ impl Interpreter {
     pub fn write_dpp_addressed_word(&mut self, address: u16, word: u16) {
         self.write_word(self.get_dpp_address(address), word);
     }
+    pub fn write_dpp_addressed_byte(&mut self, address: u16, byte: u8) {
+        self.write_byte(self.get_dpp_address(address), byte);
+    }
 
     pub fn write_gpr_word(&mut self, gpr: u8, word: u16) {
         let addr = self.gpr_address(gpr);
@@ -130,102 +241,8 @@ impl Interpreter {
         self.write_byte(addr, byte);
     }
 
-    // TODO: allow for EXT addressing overrides
-    // TODO: split into separate functions for bytewise and wordwise addresses
-    pub fn read_address<const N: u16>(&mut self, address: Address) -> Result<u16, Error> {
-        Ok(match address {
-            Address::GPR(a) => self.read_gpr_word(a),
-            Address::Indirect(a) => self.read_dpp_addressed_word(self.read_gpr_word(a)),
-            Address::IndirectIncr(a) => {
-                let gpr = self.read_gpr_word(a);
-
-                // TODO: not sure if this is correct...
-                self.write_gpr_word(a, (Wrapping(gpr) + Wrapping(N)).0);
-
-                self.read_dpp_addressed_word(gpr)
-            }
-            Address::IndirectDecr(a) => {
-                let gpr = self.read_gpr_word(a);
-
-                // TODO: not sure if this is correct...
-                self.write_gpr_word(a, (Wrapping(gpr) - Wrapping(N)).0);
-
-                self.read_dpp_addressed_word(gpr)
-            }
-            Address::Data16(a) => a,
-            Address::Data8(a) => a as u16,
-            Address::Data4(a) => a as u16,
-            Address::Data3(a) => a as u16,
-            Address::Mem(a) => self.read_dpp_addressed_word(a),
-            Address::Reg(a) => {
-                if 0xF0 & a == 0xF0 {
-                    self.read_gpr_word(a)
-                } else {
-                    // TODO: handle ESFR
-                    self.read_word(registers::sfr_addr_from_byte(a).unwrap_or(0))
-                }
-            }
-            Address::Special(s) => {
-                let mode = s >> 3;
-
-                if mode == 0 {
-                    s as u16
-                } else {
-                    let gpr = s & 0b11;
-                    let v = self.read_gpr_word(gpr);
-                    if (s >> 2) & 0b01 == 1 {
-                        self.write_gpr_word(gpr, v + N);
-                    }
-                    v
-                }
-            }
-            Address::Bitaddr(addr, bit) => (self.read_word(addr as usize) >> bit) & 1,
-            Address::Indirect16(a, c) => self.read_dpp_addressed_word(self.read_gpr_word(a) + c),
-            _ => return Err(Error::NotReadable),
-        })
-    }
-
-    // TODO: allow for EXT addressing overrides
-    // TODO: split into separate functions for bytewise and wordwise addresses
-    pub fn write_address<const N: u16>(&mut self, address: Address, val: u16) -> Result {
-        match address {
-            Address::GPR(a) => self.write_gpr_word(a, val),
-            Address::Indirect(a) => self.write_dpp_addressed_word(self.read_gpr_word(a), val),
-            Address::IndirectIncr(a) => {
-                let gpr = self.read_gpr_word(a);
-
-                // TODO: not sure if this is correct...
-                self.write_gpr_word(a, (Wrapping(gpr) + Wrapping(N)).0);
-
-                self.write_dpp_addressed_word(gpr, val)
-            }
-            Address::IndirectDecr(a) => {
-                let gpr = self.read_gpr_word(a);
-
-                // TODO: not sure if this is correct...
-                self.write_gpr_word(a, (Wrapping(gpr) - Wrapping(N)).0);
-
-                self.write_dpp_addressed_word(gpr, val)
-            }
-            Address::Mem(a) => self.write_dpp_addressed_word(a, val),
-            Address::Reg(a) => {
-                if 0xF0 & a == 0xF0 {
-                    self.write_gpr_word(a, val)
-                } else {
-                    // TODO: handle ESFR
-                    self.write_word(registers::sfr_addr_from_byte(a).unwrap_or(0), val)
-                }
-            }
-            Address::Bitaddr(addr, bit) => {
-                let word = self.read_word(addr as usize) & (0xFFFF ^ (1 << bit));
-
-                self.write_word(addr as usize, word | ((val & 1) << bit));
-            }
-            Address::Indirect16(a, c) => {
-                self.write_dpp_addressed_word(self.read_gpr_word(a) + c, val);
-            }
-            _ => return Err(Error::NotWriteable),
-        }
-        Ok(())
-    }
+    mk_write_fn!(byte, u8);
+    mk_write_fn!(word, u16);
+    mk_read_fn!(byte, u8);
+    mk_read_fn!(word, u16);
 }
