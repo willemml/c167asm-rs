@@ -29,6 +29,10 @@ pub enum Error {
     NotReadable,
     #[error("not a writeable data address type")]
     NotWriteable,
+    #[error("not a known SFR")]
+    InvalidSFR,
+    #[error("not a known ESFR")]
+    InvalidESFR,
     #[error("io error")]
     Io(#[from] std::io::Error),
 }
@@ -201,9 +205,8 @@ impl Interpreter {
                 if 0xF0 & a == 0xF0 {
                     self.read_gpr_word(a)
                 } else {
-                    // TODO: fix translation when invalid SFR
-                    // self.read_word(registers::addr_from_byte(a))
-                    0
+                    // TODO: handle ESFR
+                    self.read_word(registers::sfr_addr_from_byte(a).unwrap_or(0))
                 }
             }
             Address::Special(s) => {
@@ -253,7 +256,8 @@ impl Interpreter {
                 if 0xF0 & a == 0xF0 {
                     self.write_gpr_word(a, val)
                 } else {
-                    self.write_word(registers::addr_from_byte(a), val)
+                    // TODO: handle ESFR
+                    self.write_word(registers::sfr_addr_from_byte(a).unwrap_or(0), val)
                 }
             }
             Address::Bitaddr(addr, bit) => {
