@@ -1,29 +1,32 @@
+use crate::Error;
+use crate::Result;
 use crate::addressing::*;
 
 macro_rules! instructions {
     {$($group:ident($($arg:ident),*) {$($name:ident($($an:ident: $at:ty),*) = $num:expr $(,$ext:literal)*)*})*} => {
         #[derive(Debug, Copy, Clone)]
         pub enum Operation {
-            $($group($(${ignore($arg)} Address),*),)*
+            $($group($(Address ${ignore($arg)}),*),)*
             JmpR(ConditionCode, u8),
             Bclr(Bitoff, u8),
             Bset(Bitoff, u8),
         }
 
-        impl From<Operation> for Instruction {
-            fn from(value: Operation) -> Self {
+        impl TryFrom<Operation> for Instruction {
+            type Error = Error;
+            fn try_from(value: Operation) -> Result<Self> {
                 match value {
-                    Operation::JmpR(cc, n) => Self::JmpR(cc,n),
-                    Operation::Bclr(cc, n) => Self::Bclr(cc,n),
-                    Operation::Bset(cc, n) => Self::Bset(cc,n),
+                    Operation::JmpR(cc, n) => Ok(Self::JmpR(cc,n)),
+                    Operation::Bclr(cc, n) => Ok(Self::Bclr(cc,n)),
+                    Operation::Bset(cc, n) => Ok(Self::Bset(cc,n)),
                     $(
                       Operation::$group($($arg),*) => {
                           #[allow(irrefutable_let_patterns)]
                           #[allow(unused_parens)]
                           $(if let ($(Ok($an)),*) = ($(<$at>::try_from($an)),*) {
-                              Instruction::$name($($an),*)
+                              Ok(Instruction::$name($($an),*))
                           } else)* {
-                              panic!()
+                              Err(Error::BadArgs)
                           }
                       }
                     )*
@@ -61,36 +64,36 @@ macro_rules! instructions {
         }
 
         impl Instruction {
-            pub fn read<R: std::io::Read>(reader: &mut R) -> Self {
+            pub fn read<R: std::io::Read>(reader: &mut R) -> Result<Self> {
                 let mut byte = 0;
-                reader.read_exact(std::slice::from_mut(&mut byte)).unwrap();
+                reader.read_exact(std::slice::from_mut(&mut byte))?;
                 match byte & 0x0F {
                     0x0D => {
-                        Self::JmpR(ConditionCode::from_repr(byte >> 4).unwrap(), Rel::read(reader).0.0)
+                        Ok(Self::JmpR(ConditionCode::from_repr(byte >> 4).unwrap(), Rel::read(reader)?.0.0))
                     }
                     0x0E => {
-                        Self::Bclr(Bitoff::read(reader).0, byte >> 4)
+                        Ok(Self::Bclr(Bitoff::read(reader)?.0, byte >> 4))
                     }
                     0x0F => {
-                        Self::Bset(Bitoff::read(reader).0, byte >> 4)
+                        Ok(Self::Bset(Bitoff::read(reader)?.0, byte >> 4))
                     }
-                    _ => match OpCode::from_repr(byte).unwrap() {$($(
+                    _ => match OpCode::from_repr(byte).ok_or(Error::InvalidOpCode)? {$($(
                         OpCode::$name => {
                             #[allow(unused)]
                             #[allow(unused_parens)]
-                            let read = <($($at),*)>::read(reader);
+                            let read = <($($at),*)>::read(reader)?;
 
                             #[allow(unused_variables)]
                             let mut extra: [u8; ${count($ext)}] = [$(0u8 ${ignore($ext)}),*];
 
-                            reader.read_exact(&mut extra).unwrap();
+                            reader.read_exact(&mut extra)?;
 
-                            Self::$name($(${ignore($at)} read.${index()}),*)
+                            Ok(Self::$name($(${ignore($at)} read.${index()}),*))
                         })*)*
                     }
                 }
             }
-            pub fn write<W: std::io::Write>(&self, writer: &mut W) {
+            pub fn write<W: std::io::Write>(&self, writer: &mut W) -> Result {
                 match self {
                     Self::JmpR(cc, rel) => {
                         writer.write(&[0x0D | (*cc as u8) << 4, *rel]).unwrap();
@@ -105,10 +108,17 @@ macro_rules! instructions {
                         #[allow(non_snake_case)]
                         Self::$name($($an),*) => {
                             writer.write(&[OpCode::$name as u8 $(,$ext)*]).unwrap();
-                            ($(*$an),*).write(writer);
+                            ($(*$an),*).write(writer)?;
                         }
                     )*)*
                 }
+                Ok(())
+            }
+
+            pub fn len(&self) -> usize {
+                let mut bytes = Vec::with_capacity(4);
+                self.write(&mut bytes).unwrap();
+                bytes.len()
             }
         }
     };

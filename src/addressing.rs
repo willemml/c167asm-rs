@@ -1,24 +1,34 @@
+use crate::Error;
+use crate::Result;
+
 macro_rules! read {
     ($reader: ident, $n:expr) => {{
         let mut b = [0u8; $n];
-        $reader.read_exact(&mut b).unwrap();
+        $reader.read_exact(&mut b).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                Error::MissingArgs
+            } else {
+                e.into()
+            }
+        })?;
         b
     }};
 }
 
 macro_rules! read_fn {
     ($(:$p:vis)? [$($n:ident),*] -> $r:ty $code:block) => {
-        $($p)? fn read<R: std::io::Read>(reader: &mut R) -> $r {
+        $($p)? fn read<R: std::io::Read>(reader: &mut R) -> Result<$r> {
             let [$($n),*] = read!(reader, ${count($n)});
 
-            $code
+            Ok($code)
         }
     };
 }
 macro_rules! write_fn {
     ($(:$p:vis)? $sel:ident => $code:block) => {
-        $($p)? fn write<W: std::io::Write>(&$sel, writer: &mut W) {
-            writer.write_all(&$code).unwrap()
+        $($p)? fn write<W: std::io::Write>(&$sel, writer: &mut W) -> Result {
+            writer.write_all(&$code)?;
+            Ok(())
         }
     };
 }
@@ -67,13 +77,14 @@ macro_rules! mk_address {
 macro_rules! read_write {
     ($sel:ident $a:ident($ae:expr), $reader:ident => $code:block) => {
         impl $a {
-            pub fn read<R: std::io::Read>($reader: &mut R) -> C<$a> $code
+            pub fn read<R: std::io::Read>($reader: &mut R) -> Result<C<$a>> $code
             write_fn!(:pub $sel => { [$ae] });
         }
     };
     ($sel:ident <$a:ident($ae:expr), $b:ident($be:expr)>, $reader:ident => $code:block) => {
         impl Arg for ($a, $b) {
-            fn read<R: std::io::Read>($reader: &mut R) -> Self $code
+            type S = ($a, $b);
+            fn read<R: std::io::Read>($reader: &mut R) -> Result<Self> $code
             write_fn!($sel => { [$ae, $be].concat() });
         }
     };
@@ -82,7 +93,7 @@ macro_rules! read_write {
         read_write!(self <$a(&[self.0.0 << 4 | self.1.0]), $b([].as_slice())>, reader => {
             let [byte] = read!(reader, 1);
 
-            ($a(byte >> 4), $b(byte & 0x0F))
+            Ok(($a(byte >> 4), $b(byte & 0x0F)))
         });
     };
 
@@ -90,7 +101,7 @@ macro_rules! read_write {
         read_write!(self <$a(&[self.0.0 | 0xF0]), $b(self.1.0.to_le_bytes().as_slice())>, reader => {
             let b = read!(reader, 3);
 
-            ($a(b[0] & 0x0F), $b(u16::from_le_bytes([b[1],b[2]])))
+            Ok(($a(b[0] & 0x0F), $b(u16::from_le_bytes([b[1],b[2]]))))
         });
     };
 
@@ -98,14 +109,15 @@ macro_rules! read_write {
         read_write!(self <$a(&[self.0.0]), $b(self.1.0.to_le_bytes().as_slice())>, reader => {
             let b = read!(reader, 3);
 
-            ($a(b[0]), $b(u16::from_le_bytes([b[1], b[2]])))
+            Ok(($a(b[0]), $b(u16::from_le_bytes([b[1], b[2]]))))
         });
     };
     (!8_16: $b:ident, $a:ident) => {
         impl Arg for ($a, $b) {
-            fn read<R: std::io::Read>(reader: &mut R) -> Self {
+            type S = ($a, $b);
+            fn read<R: std::io::Read>(reader: &mut R) -> Result<Self> {
                 let [b1,b2,b3] = read!(reader, 3);
-                ($a(u16::from_le_bytes([b2, b3])), $b(b1))
+                Ok(($a(u16::from_le_bytes([b2, b3])), $b(b1)))
             }
             write_fn!(self => {
                 let b = self.0.0.to_le_bytes();
@@ -118,7 +130,7 @@ macro_rules! read_write {
         read_write!(self <$a(&[self.0.0]), $b([self.1.0, 0].as_slice())>, reader => {
             let [b1,b2,_] = read!(reader, 3);
 
-            ($a(b1), $b(b2))
+            Ok(($a(b1), $b(b2)))
         });
     };
 
@@ -126,7 +138,7 @@ macro_rules! read_write {
         read_write!(self <$a(&[self.0.0, self.1.0, (self.0.1 << 4) | self.1.1]), $b([].as_slice())>, reader => {
             let [b1,b2,b3] = read!(reader, 3);
 
-            ($a(b1, b3 >> 4), $b(b2, b3 & 0x0F))
+            Ok(($a(b1, b3 >> 4), $b(b2, b3 & 0x0F)))
         });
     };
 
@@ -141,7 +153,7 @@ macro_rules! read_write {
         read_write!(self $a(self.0), reader => {
             let [byte] = read!(reader, 1);
 
-            C($a(byte))
+            Ok(C($a(byte)))
         });
     };
 }
@@ -205,16 +217,20 @@ read_write!(8: Reg);
 read_write!(8: Trap7);
 
 pub trait Arg {
-    fn read<R: std::io::Read>(reader: &mut R) -> Self;
-    fn write<W: std::io::Write>(&self, writer: &mut W);
+    type S;
+    fn read<R: std::io::Read>(reader: &mut R) -> Result<Self::S>;
+    fn write<W: std::io::Write>(&self, writer: &mut W) -> Result;
 }
 
 impl Arg for () {
-    fn read<R: std::io::Read>(_reader: &mut R) -> Self {
-        ()
+    type S = ();
+    fn read<R: std::io::Read>(_reader: &mut R) -> Result {
+        Ok(())
     }
 
-    fn write<W: std::io::Write>(&self, _writer: &mut W) {}
+    fn write<W: std::io::Write>(&self, _writer: &mut W) -> Result {
+        Ok(())
+    }
 }
 
 impl Irang2 {
@@ -227,6 +243,7 @@ impl Irang2 {
 }
 
 impl Arg for (Indirect16, GPR) {
+    type S = Self;
     read_fn!([b1,b2,b3] -> Self {(
         Indirect16(b1 & 0x0F, u16::from_le_bytes([b2, b3])),
         GPR(b1 >> 4),
@@ -237,6 +254,7 @@ impl Arg for (Indirect16, GPR) {
     });
 }
 impl Arg for (Indirect16, GPRb) {
+    type S = Self;
     read_fn!([b1,b2,b3] -> Self {(
         Indirect16(b1 & 0x0F, u16::from_le_bytes([b2, b3])),
         GPRb(b1 >> 4),
@@ -247,6 +265,7 @@ impl Arg for (Indirect16, GPRb) {
     });
 }
 impl Arg for (GPR, Indirect16) {
+    type S = Self;
     read_fn!([b1,b2,b3] -> Self {(
         GPR(b1 >> 4),
         Indirect16(b1 & 0x0F, u16::from_le_bytes([b2, b3])),
@@ -257,6 +276,7 @@ impl Arg for (GPR, Indirect16) {
     });
 }
 impl Arg for (GPRb, Indirect16) {
+    type S = Self;
     read_fn!([b1,b2,b3] -> Self {(
         GPRb(b1 >> 4),
         Indirect16(b1 & 0x0F, u16::from_le_bytes([b2, b3])),
@@ -268,6 +288,7 @@ impl Arg for (GPRb, Indirect16) {
 }
 
 impl Arg for (Bitoff, Mask8, Data8) {
+    type S = Self;
     read_fn!([b1,b2,b3] -> Self {
         (Bitoff(b1), Mask8(b2), Data8(b3))
     });
@@ -277,6 +298,7 @@ impl Arg for (Bitoff, Mask8, Data8) {
 }
 
 impl Arg for (ConditionCode, IndirectIncr) {
+    type S = Self;
     read_fn!([byte] -> Self {(
         ConditionCode::from_repr(byte >> 4).unwrap(),
         IndirectIncr(byte & 0x0F),
@@ -286,6 +308,7 @@ impl Arg for (ConditionCode, IndirectIncr) {
     });
 }
 impl Arg for (ConditionCode, Indirect) {
+    type S = Self;
     read_fn!([byte] -> Self {(
         ConditionCode::from_repr(byte >> 4).unwrap(),
         Indirect(byte & 0x0F),
@@ -295,6 +318,7 @@ impl Arg for (ConditionCode, Indirect) {
     });
 }
 impl Arg for (ConditionCode, Caddr) {
+    type S = Self;
     read_fn!([b1, b2, b3] -> Self {(
         ConditionCode::from_repr(b1 >> 4).unwrap(),
         Caddr(u16::from_le_bytes([b2, b3])),
@@ -305,6 +329,7 @@ impl Arg for (ConditionCode, Caddr) {
     });
 }
 impl Arg for (Bitaddr, Rel) {
+    type S = Self;
     read_fn!([b1,b2,b3] -> Self {
         (Bitaddr(b1, b3 >> 4), Rel(b2))
     });
@@ -393,7 +418,6 @@ impl EXTSeq {
 }
 impl EXTRSeq {
     read_fn!(:pub [byte] -> C<Self> {
-        println!("{:08b}", byte);
         let mode = byte >> 6;
         let reg = GPR(byte & 0x0F);
         let irang = Irang2((byte >> 4) & 0b11);
