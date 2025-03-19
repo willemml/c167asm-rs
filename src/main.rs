@@ -1,5 +1,6 @@
 #![feature(macro_metavar_expr)]
 #![feature(macro_metavar_expr_concat)]
+#![feature(bigint_helper_methods)]
 
 use std::{fs::OpenOptions, io::Read};
 

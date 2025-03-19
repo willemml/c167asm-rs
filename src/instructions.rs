@@ -8,8 +8,8 @@ macro_rules! instructions {
         pub enum Operation {
             $($group($(Address ${ignore($arg)}),*),)*
             JmpR(ConditionCode, u8),
-            Bclr(Bitoff, u8),
-            Bset(Bitoff, u8),
+            Bclr(Bitaddr),
+            Bset(Bitaddr),
         }
 
         impl TryFrom<Operation> for Instruction {
@@ -17,8 +17,8 @@ macro_rules! instructions {
             fn try_from(value: Operation) -> Result<Self> {
                 match value {
                     Operation::JmpR(cc, n) => Ok(Self::JmpR(cc,n)),
-                    Operation::Bclr(cc, n) => Ok(Self::Bclr(cc,n)),
-                    Operation::Bset(cc, n) => Ok(Self::Bset(cc,n)),
+                    Operation::Bclr(n) => Ok(Self::Bclr(n)),
+                    Operation::Bset(n) => Ok(Self::Bset(n)),
                     $(
                       Operation::$group($($arg),*) => {
                           #[allow(irrefutable_let_patterns)]
@@ -42,8 +42,8 @@ macro_rules! instructions {
                     )*)*
 
                     Instruction::JmpR(cc, n) => Self::JmpR(cc,n),
-                    Instruction::Bclr(cc, n) => Self::Bclr(cc,n),
-                    Instruction::Bset(cc, n) => Self::Bset(cc,n),
+                    Instruction::Bclr(a) => Self::Bclr(a),
+                    Instruction::Bset(a) => Self::Bset(a),
                 }
             }
         }
@@ -59,8 +59,8 @@ macro_rules! instructions {
         pub enum Instruction {
             $($($name($($at),*) = $num,)*)*
             JmpR(ConditionCode, u8) = 0x0F,
-            Bclr(Bitoff, u8) = 0x0E,
-            Bset(Bitoff, u8) = 0x0D,
+            Bclr(Bitaddr) = 0x0E,
+            Bset(Bitaddr) = 0x0D,
         }
 
         impl Instruction {
@@ -72,10 +72,10 @@ macro_rules! instructions {
                         Ok(Self::JmpR(ConditionCode::from_repr(byte >> 4).unwrap(), Rel::read(reader)?.0.0))
                     }
                     0x0E => {
-                        Ok(Self::Bclr(Bitoff::read(reader)?.0, byte >> 4))
+                        Ok(Self::Bclr(Bitaddr(Bitoff::read(reader)?.0.0, byte >> 4)))
                     }
                     0x0F => {
-                        Ok(Self::Bset(Bitoff::read(reader)?.0, byte >> 4))
+                        Ok(Self::Bset(Bitaddr(Bitoff::read(reader)?.0.0, byte >> 4)))
                     }
                     _ => match OpCode::from_repr(byte).ok_or(Error::InvalidOpCode)? {$($(
                         OpCode::$name => {
@@ -98,11 +98,11 @@ macro_rules! instructions {
                     Self::JmpR(cc, rel) => {
                         writer.write(&[0x0D | (*cc as u8) << 4, *rel]).unwrap();
                     }
-                    Self::Bclr(bitoff, bit) => {
-                        writer.write(&[0x0E | *bit << 4, bitoff.0]).unwrap();
+                    Self::Bclr(bitaddr) => {
+                        writer.write(&[0x0E | bitaddr.1 << 4, bitaddr.0]).unwrap();
                     }
-                    Self::Bset(bitoff, bit) => {
-                        writer.write(&[0x0F | *bit << 4, bitoff.0]).unwrap();
+                    Self::Bset(bitaddr) => {
+                        writer.write(&[0x0F | bitaddr.1 << 4, bitaddr.0]).unwrap();
                     }
                     $($(
                         #[allow(non_snake_case)]
@@ -263,6 +263,11 @@ instructions! {
         MovBZRM(Reg, Mem) = 0xC2
         MovBZRRb(GPR, GPR) = 0xC0
     }
+    MovBS {
+        MovBSRR(GPR, GPR) = 0xD0
+        MovBSRM(Reg, Mem) = 0xD2
+        MovBSMR(Mem, Reg) = 0xD5
+    }
     Mov {
         MovI16R(Indirect16, GPR) = 0xC4
         MovIdR(IndirectDecr, GPR) = 0x88
@@ -299,9 +304,9 @@ instructions! {
 
     :singles: {
         Band(Bitaddr, Bitaddr) = 0x6A
-        BCMP(Bitaddr, Bitaddr) = 0x2A
+        Bcmp(Bitaddr, Bitaddr) = 0x2A
         Bmov(Bitaddr, Bitaddr) = 0x4A
-        BMOVN(Bitaddr, Bitaddr) = 0x3A
+        BmovN(Bitaddr, Bitaddr) = 0x3A
         Bor(Bitaddr, Bitaddr) = 0x5A
         Bxor(Bitaddr, Bitaddr) = 0x7A
         CallA(ConditionCode, Caddr) = 0xCA
