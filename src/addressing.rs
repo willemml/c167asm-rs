@@ -1,3 +1,6 @@
+use std::fmt::Display;
+use std::fmt::Write;
+
 use crate::Error;
 use crate::Result;
 
@@ -183,7 +186,6 @@ mk_address! {
     Mask8(u8),
     Bitoff(u8),
     Pag10(u16),
-    Seg8(u8),
     Irang2(u8),
     Rel(u8),
     Caddr(u16),
@@ -210,6 +212,51 @@ read_write!(8: Bitoff);
 read_write!(8: Rel);
 read_write!(8: Reg);
 read_write!(8: Trap7);
+
+impl Display for Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Address::GPR(n) => write!(f, "R{}", n),
+            Address::Indirect(n) => write!(f, "[R{}]", n),
+            Address::IndirectIncr(n) => write!(f, "[R{}+]", n),
+            Address::IndirectDecr(n) => write!(f, "[R{}-]", n),
+            Address::Data16(n) => write!(f, "#0x{:04X}", n),
+            Address::Data8(n) => write!(f, "#0x{:02X}", n),
+            Address::Data4(n) | Address::Data3(n) => write!(f, "#0x{:X}", n),
+            Address::Mem(n) => write!(f, "0x{:04X}", n),
+            Address::Reg(n) => {
+                if 0xF0 & n == 0xF0 {
+                    write!(f, "R{}", n)
+                } else {
+                    // TODO: handle ESFR
+                    write!(
+                        f,
+                        "{}",
+                        crate::registers::sfr_name_from_phy(*n as u16 * 2 + 0xFE00).unwrap_or(
+                            crate::registers::esfr_name_from_phy(*n as u16 * 2 + 0xEF00)
+                                .unwrap_or(&format!("0x{:02X}", n))
+                        )
+                    )
+                }
+            }
+            Address::Special(s) => write!(f, "0b{:04b}", s),
+            Address::Mask8(m) => write!(f, "#0b{:08b}", m),
+            Address::Bitoff(a) => write!(f, "0x{:02X}", a),
+            Address::Pag10(_) => todo!(),
+            Address::Irang2(r) => write!(f, "{}", r),
+            Address::Rel(r) => write!(f, "0x{:02X}", r),
+            Address::Caddr(c) => write!(f, "0x{:04X}", c),
+            Address::Trap7(_) => todo!(),
+            Address::Seg(s) => write!(f, "0x{:02X}", s),
+            Address::Bitaddr(a, b) => write!(f, "0x{:04X}({})", a, b),
+            Address::Indirect16(n, c) => write!(f, "R{}+#{:04X}h", n, c),
+            Address::EXTSeq(extseq) => todo!(),
+            Address::EXTRSeq(extrseq) => todo!(),
+            Address::CC(condition_code) => write!(f, "{:?}", condition_code),
+            Address::AtEx(at_ex) => todo!(),
+        }
+    }
+}
 
 pub trait Arg {
     type S;
@@ -340,8 +387,8 @@ pub enum EXTRSeq {
 pub enum EXTSeq {
     EXTP(Pag10, Irang2) = 0b01,
     EXTPR(Pag10, Irang2) = 0b11,
-    EXTS(Seg8, Irang2) = 0b00,
-    EXTSR(Seg8, Irang2) = 0b10,
+    EXTS(Seg, Irang2) = 0b00,
+    EXTSR(Seg, Irang2) = 0b10,
 }
 
 impl AtEx {
@@ -373,7 +420,7 @@ impl EXTSeq {
                 Self::EXTP(pag, irang)
             }
         } else {
-            let seg = Seg8(b2);
+            let seg = Seg(b2);
             if mode & 0b10 == 0b10 {
                 Self::EXTSR(seg, irang)
             } else {

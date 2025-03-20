@@ -58,6 +58,12 @@ macro_rules! def_all_sfr {
                 _ => None
             }
         }
+        pub fn sfr_name_from_phy(word: u16) -> Option<&'static str> {
+            match word {
+                $($phy => Some(stringify!($name)),)*
+                _ => None
+            }
+        }
 
         pub fn init_sfr(memory: &mut [u8]) {
             let list:[(usize, u16); ${count($def)}] = [$(($phy, $def)),*];
@@ -82,6 +88,12 @@ macro_rules! def_all_esfr {
         pub fn esfr_name_from_byte(byte: u8) -> Option<&'static str> {
             match byte {
                 $($($ba => Some(stringify!($name)),)?)*
+                _ => None
+            }
+        }
+        pub fn esfr_name_from_phy(word: u16) -> Option<&'static str> {
+            match word {
+                $($phy => Some(stringify!($name)),)*
                 _ => None
             }
         }

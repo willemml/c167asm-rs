@@ -216,7 +216,7 @@ macro_rules! bitlogic {
 }
 
 macro_rules! arithmetic {
-    (word:$(($nw:ident))? $fn:ident($a:ident, $b:ident) with $self:ident, ($c1:ident, $val:ident) => $code:block) => {
+    (word:$(($nw:ident))? $fn:ident($a:ident, $b:ident) with $({$r:ident})? $self:ident, ($c1:ident, $val:ident) => $code:block) => {{
         let a_initial = $self.read_address_word::<2>($a)?;
         let b_val = $self.read_address_word::<2>($b)?;
         #[allow(unused_mut)]
@@ -227,20 +227,21 @@ macro_rules! arithmetic {
         $self.flags.n = $val >> 15 == 1;
         $self.flags.e = b_val as i16 == i16::MIN;
         $(${ignore($nw)} $self.write_address_word::<0>($a, $val)?;)?
+        $(${ignore($r)} a_initial)?
+    }};
+    (nc:$t:ident$(($nw:ident))? $fn:ident($a:ident, $b:ident) with $({$r:ident})? $self:ident) => {
+        arithmetic!($t:$(($nw))? $fn($a,$b) with $({$r})? $self, (c1, val) => {c1})
     };
-    (nc:$t:ident$(($nw:ident))? $fn:ident($a:ident, $b:ident) with $self:ident) => {
-        arithmetic!($t:$(($nw))? $fn($a,$b) with $self, (c1, val) => {c1});
-    };
-    (c:$t:ident$(($nw:ident))? $fn:ident($a:ident, $b:ident) with $self:ident) => {
-        arithmetic!($t:$(($nw))? $fn($a,$b) with $self, (c1, val) => {
+    (c:$t:ident$(($nw:ident))? $fn:ident($a:ident, $b:ident) with $({$r:ident})? $self:ident) => {
+        arithmetic!($t:$(($nw))? $fn($a,$b) with $({$r})? $self, (c1, val) => {
             if $self.flags.c {
                 let (valc, c2) = val.$fn(1);
                 val = valc;
                 c1 || c2
             } else { c1 }
-        });
+        })
     };
-    (byte:$(($nw:ident))? $fn:ident($a:ident, $b:ident) with $self:ident, ($c1:ident, $val:ident) => $code:block) => {
+    (byte:$(($nw:ident))? $fn:ident($a:ident, $b:ident) with $({$r:ident})? $self:ident, ($c1:ident, $val:ident) => $code:block) => {{
         let a_initial = $self.read_address_byte::<1>($a)?;
         let b_val = $self.read_address_byte::<1>($b)?;
         #[allow(unused_mut)]
@@ -251,7 +252,8 @@ macro_rules! arithmetic {
         $self.flags.n = $val >> 7 == 1;
         $self.flags.e = b_val as i8 == i8::MIN;
         $(${ignore($nw)} $self.write_address_byte::<0>($a, $val)?;)?
-    };
+        $(${ignore($r)} a_initial)?
+    }};
 }
 
 impl Interpreter {
@@ -272,7 +274,7 @@ impl Interpreter {
             };
             let op = Operation::from(instr);
 
-            println!("{:06x}: {:02x?}", self.get_ip(), op);
+            println!("{:06x}: {}", self.get_ip(), op);
 
             // IP is always equal to the address of the instruction following a branch
             self.instruction_pointer += instr.len() as u16;
@@ -308,6 +310,22 @@ impl Interpreter {
                 }
                 Operation::CmpB(a, b) => {
                     arithmetic!(nc:byte overflowing_sub(a, b) with self);
+                }
+                Operation::Cmpi1(a, b) => {
+                    let av = arithmetic!(nc:word overflowing_sub(a, b) with {ret} self);
+                    self.write_address_word::<0>(a, av.wrapping_add(1))?;
+                }
+                Operation::Cmpi2(a, b) => {
+                    let av = arithmetic!(nc:word overflowing_sub(a, b) with {ret} self);
+                    self.write_address_word::<0>(a, av.wrapping_add(2))?;
+                }
+                Operation::Cmpd1(a, b) => {
+                    let av = arithmetic!(nc:word overflowing_sub(a, b) with {ret} self);
+                    self.write_address_word::<0>(a, av.wrapping_sub(1))?;
+                }
+                Operation::Cmpd2(a, b) => {
+                    let av = arithmetic!(nc:word overflowing_sub(a, b) with {ret} self);
+                    self.write_address_word::<0>(a, av.wrapping_sub(2))?;
                 }
 
                 Operation::Or(a, b) => {
@@ -400,11 +418,12 @@ impl Interpreter {
                     self.write_bit(a, !bv)?;
                 }
                 Operation::BFLDL(a, b, c) => {
-                    let w = self.read_address_word::<0>(a)?;
-
-                    if let (Address::Mask8(mask), Address::Data8(data)) = (b, c) {
+                    if let (Address::Bitoff(addr), Address::Mask8(mask), Address::Data8(data)) =
+                        (a, b, c)
+                    {
+                        let w = self.read_word(addr as usize + 0xFD00);
                         let nw = (w & ((!mask) as u16 | 0xFF00)) | (data as u16);
-                        self.write_address_word::<0>(a, nw)?;
+                        self.write_word(addr as usize + 0xFD00, nw);
 
                         self.flags.e = false;
                         self.flags.z = nw == 0;
@@ -416,11 +435,12 @@ impl Interpreter {
                     }
                 }
                 Operation::BFLDH(a, b, c) => {
-                    let w = self.read_address_word::<0>(a)?;
-
-                    if let (Address::Mask8(mask), Address::Data8(data)) = (b, c) {
+                    if let (Address::Bitoff(addr), Address::Mask8(mask), Address::Data8(data)) =
+                        (a, b, c)
+                    {
+                        let w = self.read_word(addr as usize + 0xFD00);
                         let nw = (w & (((!mask) as u16) << 8 | 0xFF)) | ((data as u16) << 8);
-                        self.write_address_word::<0>(a, nw)?;
+                        self.write_word(addr as usize + 0xFD00, nw);
 
                         self.flags.e = false;
                         self.flags.z = nw == 0;
@@ -537,7 +557,12 @@ impl Interpreter {
                 Operation::RET() => {
                     self.instruction_pointer = self.stack_pop();
                 }
-                Operation::RETI() => todo!(),
+                Operation::RETI() => {
+                    self.instruction_pointer = self.stack_pop();
+                    let csp = self.stack_pop();
+                    self.write_sfr_word::<registers::CSP>(csp);
+                    self.stack_pop();
+                }
                 Operation::RETS() => {
                     self.instruction_pointer = self.stack_pop();
                     let csp = self.stack_pop();
@@ -628,10 +653,6 @@ impl Interpreter {
                 Operation::Neg(a) => todo!(),
                 Operation::Trap(a) => todo!(),
                 Operation::Ashr(a, b) => todo!(),
-                Operation::Cmpd1(a, b) => todo!(),
-                Operation::Cmpd2(a, b) => todo!(),
-                Operation::Cmpi1(a, b) => todo!(),
-                Operation::Cmpi2(a, b) => todo!(),
                 Operation::Shl(a, b) => todo!(),
                 Operation::Shr(a, b) => todo!(),
                 Operation::Mul(a, b) => todo!(),

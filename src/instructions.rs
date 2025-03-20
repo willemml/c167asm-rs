@@ -12,6 +12,19 @@ macro_rules! instructions {
             Bset(Bitaddr),
         }
 
+        impl std::fmt::Display for Operation {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+
+                    Operation::JmpR(cc, n) => write!(f, "JMPR {:?}, {}", cc, n),
+                    Operation::Bclr(n) => write!(f, "BCLR {:02X}h, {}", n.0, n.1),
+                    Operation::Bset(n) => write!(f, "BSET {:02X}h, {}", n.0, n.1),
+                    $(
+                      Operation::$group($($arg),*) => write!(f, stringify!({} $(${ignore($arg)} {}),*), stringify!($group).to_uppercase(), $($arg),*),                    )*
+                }
+            }
+        }
+
         impl TryFrom<Operation> for Instruction {
             type Error = Error;
             fn try_from(value: Operation) -> Result<Self> {
