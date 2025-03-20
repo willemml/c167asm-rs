@@ -58,6 +58,16 @@ macro_rules! def_all_sfr {
                 _ => None
             }
         }
+
+        pub fn init_sfr(memory: &mut [u8]) {
+            let list:[(usize, u16); ${count($def)}] = [$(($phy, $def)),*];
+            for (sfr, def) in list.into_iter() {
+                let [b1,b2] = def.to_le_bytes();
+
+                memory[sfr] = b1;
+                memory[sfr + 1] = b2;
+            }
+        }
     };
 }
 macro_rules! def_all_esfr {
@@ -73,6 +83,15 @@ macro_rules! def_all_esfr {
             match byte {
                 $($($ba => Some(stringify!($name)),)?)*
                 _ => None
+            }
+        }
+        pub fn init_esfr(memory: &mut [u8]) {
+            let list:[(usize, u16); ${count($def)}] = [$(($phy, $def)),*];
+            for (esfr, def) in list.into_iter() {
+                let [b1,b2] = def.to_le_bytes();
+
+                memory[esfr] = b1;
+                memory[esfr + 1] = b2;
             }
         }
     };

@@ -3,6 +3,7 @@ use std::num::Wrapping;
 use crate::Error;
 use crate::Result;
 use crate::addressing::Address;
+use crate::addressing::ConditionCode;
 use crate::instructions::*;
 use crate::registers;
 use crate::registers::SpecialFunctionRegister;
@@ -48,7 +49,7 @@ macro_rules! mk_write_fn {
                         self.${concat(write_gpr_, $type)}(a, val)
                     } else {
                         // TODO: handle ESFR
-                        self.${concat(write_, $type)}(registers::sfr_addr_from_byte(a).unwrap_or(0), val)
+                        self.${concat(write_, $type)}(a as usize * 2 + 0xFE00, val)
                     }
                 }
                 Address::Bitaddr(addr, bit) => {
@@ -98,7 +99,8 @@ macro_rules! mk_read_fn {
                         self.${concat(read_gpr_, $type)}(a)
                     } else {
                         // TODO: handle ESFR
-                        self.${concat(read_, $type)}(registers::sfr_addr_from_byte(a).unwrap_or(0))
+
+                        self.${concat(read_, $type)}(a as usize * 2 + 0xFE00)
                     }
                 }
                 Address::Special(s) => {
@@ -117,7 +119,7 @@ macro_rules! mk_read_fn {
                 }
                 Address::Bitaddr(addr, bit) => (self.${concat(read_, $type)}(addr as usize) >> bit) & 1,
                 Address::Indirect16(a, c) => {
-                    self.${concat(read_dpp_addressed_, $type)}(self.read_gpr_word(a) + c)
+                    self.${concat(read_dpp_addressed_, $type)}(self.read_gpr_word(a).wrapping_add(c))
                 }
                 _ => return Err(Error::NotReadable),
             })
@@ -147,6 +149,29 @@ struct Flags {
     /// Set if the most significant bit of the result is set. Cleared
     /// otherwise.
     n: bool,
+}
+
+impl Flags {
+    pub fn test_cc(&self, code: ConditionCode) -> bool {
+        match code {
+            ConditionCode::Unconditional => true,
+            ConditionCode::ZoEQ => self.z,
+            ConditionCode::NZoNE => !self.z,
+            ConditionCode::V => self.v,
+            ConditionCode::NV => !self.v,
+            ConditionCode::N => self.n,
+            ConditionCode::NN => !self.n,
+            ConditionCode::CoULT => self.c,
+            ConditionCode::NCoUGE => !self.c,
+            ConditionCode::ULE => self.z || self.c,
+            ConditionCode::UGT => !(self.z || self.c),
+            ConditionCode::SLT => self.n ^ self.v,
+            ConditionCode::SLE => self.z || (self.n ^ self.v),
+            ConditionCode::SGE => !(self.n ^ self.v),
+            ConditionCode::SGT => !(self.z || (self.n ^ self.v)),
+            ConditionCode::NET => self.z || self.e,
+        }
+    }
 }
 
 macro_rules! bitlogic {
@@ -247,7 +272,11 @@ impl Interpreter {
             };
             let op = Operation::from(instr);
 
-            println!("{:04x}: {:02x?}", self.instruction_pointer, op);
+            println!("{:06x}: {:02x?}", self.get_ip(), op);
+
+            // IP is always equal to the address of the instruction following a branch
+            self.instruction_pointer += instr.len() as u16;
+
             match op {
                 Operation::Add(a, b) => {
                     arithmetic!(nc:word(w) overflowing_add(a, b) with self);
@@ -370,8 +399,47 @@ impl Interpreter {
 
                     self.write_bit(a, !bv)?;
                 }
-                Operation::BFLDL(a, b, c) => todo!(),
-                Operation::BFLDH(a, b, c) => todo!(),
+                Operation::BFLDL(a, b, c) => {
+                    let w = self.read_address_word::<0>(a)?;
+
+                    if let (Address::Mask8(mask), Address::Data8(data)) = (b, c) {
+                        let nw = (w & ((!mask) as u16 | 0xFF00)) | (data as u16);
+                        self.write_address_word::<0>(a, nw)?;
+
+                        self.flags.e = false;
+                        self.flags.z = nw == 0;
+                        self.flags.v = false;
+                        self.flags.c = false;
+                        self.flags.n = nw >> 15 == 1;
+                    } else {
+                        return Err(Error::BadArgs);
+                    }
+                }
+                Operation::BFLDH(a, b, c) => {
+                    let w = self.read_address_word::<0>(a)?;
+
+                    if let (Address::Mask8(mask), Address::Data8(data)) = (b, c) {
+                        let nw = (w & (((!mask) as u16) << 8 | 0xFF)) | ((data as u16) << 8);
+                        self.write_address_word::<0>(a, nw)?;
+
+                        self.flags.e = false;
+                        self.flags.z = nw == 0;
+                        self.flags.v = false;
+                        self.flags.c = false;
+                        self.flags.n = nw >> 15 == 1;
+                    } else {
+                        return Err(Error::BadArgs);
+                    }
+                }
+
+                Operation::Pop(a) => {
+                    let val = self.stack_pop();
+                    self.write_address_word::<0>(a, val)?;
+                }
+                Operation::Push(a) => {
+                    let val = self.read_address_word::<0>(a)?;
+                    self.stack_push(val);
+                }
 
                 Operation::DISWDT() => todo!(),
                 Operation::SRVWDT() => todo!(),
@@ -382,23 +450,170 @@ impl Interpreter {
                 Operation::PWRDN() => return Ok(()),
                 Operation::SRST() => todo!(),
 
-                Operation::JB(a, b) => todo!(),
-                Operation::JBC(a, b) => todo!(),
-                Operation::JNB(a, b) => todo!(),
-                Operation::JNBS(a, b) => todo!(),
-                Operation::JmpR(condition_code, _) => todo!(),
-                Operation::JmpA(a, b) => todo!(),
-                Operation::JmpI(a, b) => todo!(),
-                Operation::JmpS(a, b) => todo!(),
+                Operation::JB(a, b) => {
+                    if let Address::Rel(r) = b {
+                        if self.read_bit(a)? {
+                            self.instruction_pointer = self
+                                .instruction_pointer
+                                .saturating_add_signed(r as i8 as i16);
+                        }
+                    } else {
+                        return Err(Error::BadArgs);
+                    }
+                }
+                Operation::JBC(a, b) => {
+                    if let Address::Rel(r) = b {
+                        if self.read_bit(a)? {
+                            self.write_bit(a, false)?;
+                            self.instruction_pointer = self
+                                .instruction_pointer
+                                .saturating_add_signed(r as i8 as i16);
+                        }
+                    } else {
+                        return Err(Error::BadArgs);
+                    }
+                }
+                Operation::JNB(a, b) => {
+                    if let Address::Rel(r) = b {
+                        if !self.read_bit(a)? {
+                            self.instruction_pointer = self
+                                .instruction_pointer
+                                .saturating_add_signed(r as i8 as i16);
+                        }
+                    } else {
+                        return Err(Error::BadArgs);
+                    }
+                }
+                Operation::JNBS(a, b) => {
+                    if let Address::Rel(r) = b {
+                        if !self.read_bit(a)? {
+                            self.write_bit(a, true)?;
+                            // TODO: handle over/under flow
+                            self.instruction_pointer = self
+                                .instruction_pointer
+                                .saturating_add_signed(r as i8 as i16);
+                        }
+                    } else {
+                        return Err(Error::BadArgs);
+                    }
+                }
 
-                Operation::RET() => todo!(),
+                Operation::JmpA(a, b) => {
+                    if let (Address::CC(cc), Address::Caddr(addr)) = (a, b) {
+                        if self.flags.test_cc(cc) {
+                            self.instruction_pointer = addr;
+                        }
+                    } else {
+                        return Err(Error::BadArgs);
+                    }
+                }
+                Operation::JmpI(a, b) => {
+                    if let Address::CC(cc) = a {
+                        if self.flags.test_cc(cc) {
+                            self.instruction_pointer = self.read_address_word::<0>(b)?;
+                        }
+                    } else {
+                        return Err(Error::BadArgs);
+                    }
+                }
+                Operation::JmpR(cc, r) => {
+                    if self.flags.test_cc(cc) {
+                        // TODO: handle over/under flow
+                        self.instruction_pointer = self
+                            .instruction_pointer
+                            .saturating_add_signed(r as i8 as i16);
+                    }
+                }
+                Operation::JmpS(a, b) => {
+                    if let (Address::Seg(seg), Address::Caddr(addr)) = (a, b) {
+                        self.instruction_pointer = addr;
+                        // upper 8 bits of CSP are unused
+                        self.write_sfr_word::<registers::CSP>(seg as u16);
+                    } else {
+                        return Err(Error::BadArgs);
+                    }
+                }
+
+                Operation::RET() => {
+                    self.instruction_pointer = self.stack_pop();
+                }
                 Operation::RETI() => todo!(),
-                Operation::RETS() => todo!(),
-                Operation::RETP(a) => todo!(),
+                Operation::RETS() => {
+                    self.instruction_pointer = self.stack_pop();
+                    let csp = self.stack_pop();
+                    self.write_sfr_word::<registers::CSP>(csp);
+                }
+                Operation::RETP(a) => {
+                    self.instruction_pointer = self.stack_pop();
+                    let w = self.stack_pop();
+                    self.flags.e = w as i16 == i16::MIN;
+                    self.flags.z = w == 0;
+                    self.flags.n = w >> 15 == 1;
+                    self.write_address_word::<0>(a, w)?;
+                }
 
-                Operation::CallA(a, b) => todo!(),
-                Operation::CallI(a, b) => todo!(),
-                Operation::CallR(a) => todo!(),
+                Operation::PCall(a, b) => {
+                    if let Address::Caddr(addr) = b {
+                        let w = self.read_address_word::<0>(a)?;
+                        self.stack_push(w);
+                        self.instruction_pointer = addr;
+                    } else {
+                        return Err(Error::BadArgs);
+                    }
+                }
+                Operation::CallA(a, b) => {
+                    if let (Address::CC(cc), Address::Caddr(addr)) = (a, b) {
+                        if self.flags.test_cc(cc) {
+                            self.stack_push(self.instruction_pointer);
+                            self.instruction_pointer = addr;
+                        }
+                    } else {
+                        return Err(Error::BadArgs);
+                    }
+                }
+                Operation::CallI(a, b) => {
+                    if let Address::CC(cc) = a {
+                        if self.flags.test_cc(cc) {
+                            self.stack_push(self.instruction_pointer);
+                            self.instruction_pointer = self.read_address_word::<0>(b)?;
+                        }
+                    } else {
+                        return Err(Error::BadArgs);
+                    }
+                }
+                Operation::CallR(a) => {
+                    if let Address::Rel(r) = a {
+                        self.stack_push(self.instruction_pointer);
+                        // TODO: handle over/under flow
+                        self.instruction_pointer = self
+                            .instruction_pointer
+                            .saturating_add_signed(r as i8 as i16);
+                    } else {
+                        return Err(Error::BadArgs);
+                    }
+                }
+                Operation::CallS(a, b) => {
+                    if let (Address::Seg(seg), Address::Caddr(addr)) = (a, b) {
+                        self.stack_push(self.read_sfr_word::<registers::CSP>());
+                        self.stack_push(self.instruction_pointer);
+                        self.instruction_pointer = addr;
+                        // upper 8 bits of CSP are unused
+                        self.write_sfr_word::<registers::CSP>(seg as u16);
+                    } else {
+                        return Err(Error::BadArgs);
+                    }
+                }
+
+                Operation::Rol(a, b) => {
+                    let w = self.read_address_word::<0>(a)?;
+                    let r = self.read_address_byte::<0>(b)?;
+                    self.write_address_word::<0>(a, w.rotate_left(r as u32))?;
+                }
+                Operation::Ror(a, b) => {
+                    let w = self.read_address_word::<0>(a)?;
+                    let r = self.read_address_byte::<0>(b)?;
+                    self.write_address_word::<0>(a, w.rotate_right(r as u32))?;
+                }
 
                 Operation::AtEx(a) => todo!(),
                 Operation::CPLB(a) => todo!(),
@@ -411,16 +626,12 @@ impl Interpreter {
                 Operation::EXTreg(a) => todo!(),
                 Operation::NegB(a) => todo!(),
                 Operation::Neg(a) => todo!(),
-                Operation::Pop(a) => todo!(),
-                Operation::Push(a) => todo!(),
                 Operation::Trap(a) => todo!(),
                 Operation::Ashr(a, b) => todo!(),
                 Operation::Cmpd1(a, b) => todo!(),
                 Operation::Cmpd2(a, b) => todo!(),
                 Operation::Cmpi1(a, b) => todo!(),
                 Operation::Cmpi2(a, b) => todo!(),
-                Operation::Rol(a, b) => todo!(),
-                Operation::Ror(a, b) => todo!(),
                 Operation::Shl(a, b) => todo!(),
                 Operation::Shr(a, b) => todo!(),
                 Operation::Mul(a, b) => todo!(),
@@ -428,8 +639,6 @@ impl Interpreter {
                 Operation::PRIOR(a, b) => todo!(),
                 Operation::SCXT(a, b) => todo!(),
             }
-
-            self.instruction_pointer += instr.len() as u16;
         }
     }
 
@@ -459,6 +668,37 @@ impl Interpreter {
         registers::CP::ADDRESS + ((gpr as usize & 0xF) * 2)
     }
 
+    pub fn stack_push(&mut self, word: u16) {
+        let mut sp = self.read_sfr_word::<registers::SP>();
+        let stkov = self.read_sfr_word::<registers::STKOV>();
+
+        sp -= 2;
+        self.write_sfr_word::<registers::SP>(sp);
+
+        // TODO: make sure stack pointer can only be set to a multiple of two
+        // TODO: handle stack overflow/underflow trap
+        if sp == stkov {
+            todo!();
+        }
+
+        self.write_word(sp as usize, word);
+    }
+
+    pub fn stack_pop(&mut self) -> u16 {
+        let mut sp = self.read_sfr_word::<registers::SP>();
+        let stkun = self.read_sfr_word::<registers::STKUN>();
+
+        sp += 2;
+
+        self.write_sfr_word::<registers::SP>(sp);
+
+        if sp == stkun {
+            todo!();
+        }
+
+        self.read_word(sp as usize)
+    }
+
     pub fn read_gpr_byte(&self, gpr: u8) -> u8 {
         self.memory[self.read_sfr_word::<registers::CP>() as usize + (gpr as usize & 0xF)]
     }
@@ -470,6 +710,9 @@ impl Interpreter {
 
     pub fn read_sfr_word<S: SpecialFunctionRegister>(&self) -> u16 {
         self.read_word(S::ADDRESS)
+    }
+    pub fn write_sfr_word<S: SpecialFunctionRegister>(&mut self, word: u16) {
+        self.write_word(S::ADDRESS, word)
     }
 
     pub fn read_sfr_byte<S: SpecialFunctionRegister>(&self) -> u8 {
@@ -514,8 +757,10 @@ impl Interpreter {
 
     pub fn write_bit(&mut self, address: Address, bit: bool) -> Result {
         if let Address::Bitaddr(addr, bitn) = address {
-            let byte = self.memory.get_mut(addr as usize).unwrap();
-            *byte = *byte & (if bit { 1 } else { 0 } << bitn);
+            let mut word = self.read_word(addr as usize + 0xFD00);
+            word = word & (if bit { 1 } else { 0 } << bitn);
+
+            self.write_word(addr as usize + 0xFD00, word);
 
             Ok(())
         } else {
@@ -525,9 +770,9 @@ impl Interpreter {
 
     pub fn read_bit(&mut self, address: Address) -> Result<bool> {
         if let Address::Bitaddr(addr, bitn) = address {
-            let byte = self.memory[addr as usize];
+            let word = self.read_word(addr as usize + 0xFD00);
 
-            Ok(byte >> bitn == 1)
+            Ok(word >> bitn == 1)
         } else {
             Err(Error::BadArgs)
         }

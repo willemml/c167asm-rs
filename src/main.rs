@@ -48,5 +48,8 @@ fn main() {
     irom.read(&mut interpreter.memory).unwrap();
     flash.read(&mut interpreter.memory[0x80000..]).unwrap();
 
+    registers::init_sfr(&mut interpreter.memory);
+    registers::init_esfr(&mut interpreter.memory);
+
     interpreter.execute().unwrap();
 }

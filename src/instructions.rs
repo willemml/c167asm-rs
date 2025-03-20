@@ -143,8 +143,8 @@ macro_rules! instructions {
         $($specn(a, b) {
             ${concat($specn,RR)}(a: GPR, b: GPR) = 0x00 + $start
             ${concat($specn,RS)}(a: Reg, b: Mem) = 0x08 + $start
-            ${concat($specn,RD)}(a: Mem, b: Reg) = 0x06 + $start
-            ${concat($specn,RM)}(a: Reg, b: Data16) = 0x02 + $start
+            ${concat($specn,RM)}(a: Reg, b: Data16) = 0x06 + $start
+            ${concat($specn,RD)}(a: Mem, b: Reg) = 0x02 + $start
             ${concat($specn,MR)}(a: GPR, b: Special) = 0x04 + $start
         })*
         $($single() {
@@ -309,8 +309,10 @@ instructions! {
         BmovN(Bitaddr, Bitaddr) = 0x3A
         Bor(Bitaddr, Bitaddr) = 0x5A
         Bxor(Bitaddr, Bitaddr) = 0x7A
+        PCall(Reg, Caddr) = 0xE2
         CallA(ConditionCode, Caddr) = 0xCA
         CallI(ConditionCode, Indirect) = 0xAB
+        CallS(Seg, Caddr) = 0xDA
         JB(Bitaddr, Rel) = 0x8A
         JBC(Bitaddr, Rel) = 0xAA
         JmpA(ConditionCode, Caddr) = 0xEA

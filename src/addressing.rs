@@ -201,6 +201,7 @@ read_write!(8_16: Reg, Mem);
 read_write!(8_16: Seg, Caddr);
 read_write!(8_16: Reg, Data16);
 read_write!(!8_16: Reg, Mem);
+read_write!(8_16: Reg, Caddr);
 read_write!(8_16: Indirect, Mem);
 read_write!(!8_16: Indirect, Mem);
 read_write!(8(4)x2: Bitaddr, Bitaddr);
