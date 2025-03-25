@@ -4,7 +4,7 @@ use crate::addressing::*;
 
 macro_rules! instructions {
     {$($group:ident($($arg:ident),*) {$($name:ident($($an:ident: $at:ty),*) = $num:expr $(,$ext:literal)*)*})*} => {
-        #[derive(Debug, Copy, Clone)]
+        #[derive(Debug, Copy, Clone, PartialEq, Eq)]
         pub enum Operation {
             $($group($(Address ${ignore($arg)}),*),)*
             JmpR(ConditionCode, u8),

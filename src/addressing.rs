@@ -1,5 +1,4 @@
 use std::fmt::Display;
-use std::fmt::Write;
 
 use crate::Error;
 use crate::Result;
@@ -40,7 +39,7 @@ macro_rules! mk_address {
     {
         $($name:ident($type:ty)),*
     } => {
-        #[derive(Debug, Copy, Clone)]
+        #[derive(Debug, Copy, Clone, Eq, PartialEq)]
         pub enum Address {$(
            $name($type),
         )*
@@ -53,7 +52,7 @@ macro_rules! mk_address {
         }
 
         $(
-        #[derive(Debug, Copy, Clone)]
+        #[derive(Debug, Copy, Clone, Eq, PartialEq)]
         pub struct $name(pub $type);
 
         impl From<$name> for Address {
@@ -216,17 +215,17 @@ read_write!(8: Trap7);
 impl Display for Address {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Address::GPR(n) => write!(f, "R{}", n),
-            Address::Indirect(n) => write!(f, "[R{}]", n),
-            Address::IndirectIncr(n) => write!(f, "[R{}+]", n),
-            Address::IndirectDecr(n) => write!(f, "[R{}-]", n),
-            Address::Data16(n) => write!(f, "#0x{:04X}", n),
-            Address::Data8(n) => write!(f, "#0x{:02X}", n),
-            Address::Data4(n) | Address::Data3(n) => write!(f, "#0x{:X}", n),
-            Address::Mem(n) => write!(f, "0x{:04X}", n),
+            Address::GPR(n) => write!(f, "R{}", n & 0xF),
+            Address::Indirect(n) => write!(f, "[R{}]", n & 0xF),
+            Address::IndirectIncr(n) => write!(f, "[R{}+]", n & 0xF),
+            Address::IndirectDecr(n) => write!(f, "[R{}-]", n & 0xF),
+            Address::Data16(n) => write!(f, "#{}", n),
+            Address::Data8(n) => write!(f, "#{}", n),
+            Address::Data4(n) | Address::Data3(n) => write!(f, "#{}", n),
+            Address::Mem(n) => write!(f, "*{:04X}h", n),
             Address::Reg(n) => {
                 if 0xF0 & n == 0xF0 {
-                    write!(f, "R{}", n)
+                    write!(f, "R{}", n & 0xF)
                 } else {
                     // TODO: handle ESFR
                     write!(
@@ -239,21 +238,30 @@ impl Display for Address {
                     )
                 }
             }
-            Address::Special(s) => write!(f, "0b{:04b}", s),
+            Address::Special(s) => {
+                let mode = s >> 3;
+
+                if mode == 0 {
+                    write!(f, "#{}", s)
+                } else {
+                    let gpr = s & 0b11;
+                    if (s >> 2) & 0b01 == 1 {
+                        write!(f, "[R{}+]", gpr)
+                    } else {
+                        write!(f, "[R{}]", gpr)
+                    }
+                }
+            }
             Address::Mask8(m) => write!(f, "#0b{:08b}", m),
             Address::Bitoff(a) => write!(f, "0x{:02X}", a),
-            Address::Pag10(_) => todo!(),
             Address::Irang2(r) => write!(f, "{}", r),
-            Address::Rel(r) => write!(f, "0x{:02X}", r),
-            Address::Caddr(c) => write!(f, "0x{:04X}", c),
-            Address::Trap7(_) => todo!(),
+            Address::Rel(r) => write!(f, "{}", r),
+            Address::Caddr(c) => write!(f, "0x{:04X}h", c),
             Address::Seg(s) => write!(f, "0x{:02X}", s),
-            Address::Bitaddr(a, b) => write!(f, "0x{:04X}({})", a, b),
-            Address::Indirect16(n, c) => write!(f, "R{}+#{:04X}h", n, c),
-            Address::EXTSeq(extseq) => todo!(),
-            Address::EXTRSeq(extrseq) => todo!(),
+            Address::Bitaddr(a, b) => write!(f, "*{:02X}h({})", a, b),
+            Address::Indirect16(n, c) => write!(f, "[R{}+#{:04X}h]", n, c),
             Address::CC(condition_code) => write!(f, "{:?}", condition_code),
-            Address::AtEx(at_ex) => todo!(),
+            a => write!(f, "{:0X?}", a),
         }
     }
 }
@@ -361,20 +369,20 @@ impl Arg for (Bitaddr, Rel) {
 
 pub struct C<T>(pub T);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct Bitaddr(pub u8, pub u8);
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct Indirect16(pub u8, pub u16);
 
 #[repr(u8)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum AtEx {
     Atomic(Irang2),
     EXTR(Irang2),
 }
 
 #[repr(u8)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum EXTRSeq {
     EXTP(GPR, Irang2) = 0b01,
     EXTPR(GPR, Irang2) = 0b11,
@@ -383,7 +391,7 @@ pub enum EXTRSeq {
 }
 
 #[repr(u8)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum EXTSeq {
     EXTP(Pag10, Irang2) = 0b01,
     EXTPR(Pag10, Irang2) = 0b11,
@@ -546,7 +554,7 @@ impl From<Indirect16> for Address {
 }
 
 #[repr(u8)]
-#[derive(Debug, Copy, Clone, strum::FromRepr)]
+#[derive(Debug, Copy, Clone, strum::FromRepr, Eq, PartialEq)]
 pub enum ConditionCode {
     Unconditional = 0x0,
     ZoEQ = 0x2,

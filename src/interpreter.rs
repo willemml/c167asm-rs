@@ -48,8 +48,12 @@ macro_rules! mk_write_fn {
                     if 0xF0 & a == 0xF0 {
                         self.${concat(write_gpr_, $type)}(a, val)
                     } else {
-                        // TODO: handle ESFR
-                        self.${concat(write_, $type)}(a as usize * 2 + 0xFE00, val)
+                        let base = if self.extr {
+                            0xEF00
+                        } else {
+                            0xFE00
+                        };
+                        self.${concat(write_, $type)}(a as usize * 2 + base, val)
                     }
                 }
                 Address::Bitaddr(addr, bit) => {
@@ -98,9 +102,12 @@ macro_rules! mk_read_fn {
                     if 0xF0 & a == 0xF0 {
                         self.${concat(read_gpr_, $type)}(a)
                     } else {
-                        // TODO: handle ESFR
-
-                        self.${concat(read_, $type)}(a as usize * 2 + 0xFE00)
+                        let base = if self.extr {
+                            0xEF00
+                        } else {
+                            0xFE00
+                        };
+                        self.${concat(read_, $type)}(a as usize * 2 + base)
                     }
                 }
                 Address::Special(s) => {
@@ -131,6 +138,16 @@ pub struct Interpreter {
     pub memory: Vec<u8>,
     instruction_pointer: u16,
     flags: Flags,
+    ext_count: usize,
+    extr: bool,
+    ext_addr: ExtAddr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtAddr {
+    None,
+    Page(u16),
+    Seg(u8),
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -262,10 +279,15 @@ impl Interpreter {
             memory: vec![0u8; 16_000_000],
             instruction_pointer: 0,
             flags: Flags::default(),
+            ext_count: 0,
+            extr: false,
+            ext_addr: ExtAddr::None,
         }
     }
 
     pub fn execute(&mut self) -> Result {
+        let mut last = None;
+        let mut repeat_count = 0;
         loop {
             let ip = self.get_ip();
             let instr = {
@@ -274,7 +296,28 @@ impl Interpreter {
             };
             let op = Operation::from(instr);
 
-            println!("{:06x}: {}", self.get_ip(), op);
+            if self.ext_count > 0 {
+                self.ext_count -= 1;
+            } else {
+                self.extr = false;
+                self.ext_addr = ExtAddr::None;
+            }
+
+            if Some(op) == last {
+                if repeat_count == 0 {
+                    println!("  repeating...");
+                }
+                repeat_count += 1;
+            } else {
+                if repeat_count > 1 {
+                    println!("  repeated {} times", repeat_count);
+                } else if repeat_count == 1 {
+                    println!("  repeated once");
+                }
+                repeat_count = 0;
+                println!("{:06x}: {}", self.get_ip(), op);
+                last = Some(op);
+            }
 
             // IP is always equal to the address of the instruction following a branch
             self.instruction_pointer += instr.len() as u16;
@@ -475,7 +518,7 @@ impl Interpreter {
                         if self.read_bit(a)? {
                             self.instruction_pointer = self
                                 .instruction_pointer
-                                .saturating_add_signed(r as i8 as i16);
+                                .saturating_add_signed(r as i8 as i16 * 2);
                         }
                     } else {
                         return Err(Error::BadArgs);
@@ -487,7 +530,7 @@ impl Interpreter {
                             self.write_bit(a, false)?;
                             self.instruction_pointer = self
                                 .instruction_pointer
-                                .saturating_add_signed(r as i8 as i16);
+                                .saturating_add_signed(r as i8 as i16 * 2);
                         }
                     } else {
                         return Err(Error::BadArgs);
@@ -498,7 +541,7 @@ impl Interpreter {
                         if !self.read_bit(a)? {
                             self.instruction_pointer = self
                                 .instruction_pointer
-                                .saturating_add_signed(r as i8 as i16);
+                                .saturating_add_signed(r as i8 as i16 * 2);
                         }
                     } else {
                         return Err(Error::BadArgs);
@@ -511,7 +554,7 @@ impl Interpreter {
                             // TODO: handle over/under flow
                             self.instruction_pointer = self
                                 .instruction_pointer
-                                .saturating_add_signed(r as i8 as i16);
+                                .saturating_add_signed(r as i8 as i16 * 2);
                         }
                     } else {
                         return Err(Error::BadArgs);
@@ -581,6 +624,7 @@ impl Interpreter {
                     if let Address::Caddr(addr) = b {
                         let w = self.read_address_word::<0>(a)?;
                         self.stack_push(w);
+                        self.stack_push(self.instruction_pointer);
                         self.instruction_pointer = addr;
                     } else {
                         return Err(Error::BadArgs);
@@ -640,21 +684,109 @@ impl Interpreter {
                     self.write_address_word::<0>(a, w.rotate_right(r as u32))?;
                 }
 
+                Operation::EXTo(a) => {
+                    if let Address::EXTSeq(i) = a {
+                        match i {
+                            crate::addressing::EXTSeq::EXTP(pag10, irang2) => {
+                                self.ext_count = irang2.0 as usize;
+                                self.ext_addr = ExtAddr::Page(pag10.0);
+                            }
+                            crate::addressing::EXTSeq::EXTPR(pag10, irang2) => {
+                                self.ext_count = irang2.0 as usize;
+                                self.extr = true;
+                                self.ext_addr = ExtAddr::Page(pag10.0);
+                            }
+                            crate::addressing::EXTSeq::EXTS(seg, irang2) => {
+                                self.ext_count = irang2.0 as usize;
+                                self.ext_addr = ExtAddr::Seg(seg.0);
+                            }
+                            crate::addressing::EXTSeq::EXTSR(seg, irang2) => {
+                                self.ext_count = irang2.0 as usize;
+                                self.extr = true;
+                                self.ext_addr = ExtAddr::Seg(seg.0);
+                            }
+                        }
+                        self.ext_count += 1;
+                    } else {
+                        return Err(Error::BadArgs);
+                    }
+                }
+                Operation::EXTreg(a) => {
+                    if let Address::EXTRSeq(i) = a {
+                        match i {
+                            crate::addressing::EXTRSeq::EXTP(gpr, irang2) => {
+                                let page = self.read_gpr_word(gpr.0);
+                                self.ext_count = irang2.0 as usize;
+                                self.ext_addr = ExtAddr::Page(page);
+                            }
+                            crate::addressing::EXTRSeq::EXTPR(gpr, irang2) => {
+                                let page = self.read_gpr_word(gpr.0);
+                                self.ext_count = irang2.0 as usize;
+                                self.ext_addr = ExtAddr::Page(page);
+                                self.extr = true;
+                            }
+                            crate::addressing::EXTRSeq::EXTS(gpr, irang2) => {
+                                let seg = (self.read_gpr_word(gpr.0) >> 8) as u8;
+                                self.ext_count = irang2.0 as usize;
+                                self.ext_addr = ExtAddr::Seg(seg);
+                            }
+                            crate::addressing::EXTRSeq::EXTSR(gpr, irang2) => {
+                                let seg = (self.read_gpr_word(gpr.0) >> 8) as u8;
+                                self.ext_count = irang2.0 as usize;
+                                self.ext_addr = ExtAddr::Seg(seg);
+                                self.extr = true;
+                            }
+                        }
+                        self.ext_count += 1;
+                    } else {
+                        return Err(Error::BadArgs);
+                    }
+                }
                 Operation::AtEx(a) => todo!(),
+
                 Operation::CPLB(a) => todo!(),
                 Operation::CPL(a) => todo!(),
                 Operation::Div(a) => todo!(),
                 Operation::Divl(a) => todo!(),
                 Operation::Divlu(a) => todo!(),
                 Operation::Divu(a) => todo!(),
-                Operation::EXTo(a) => todo!(),
-                Operation::EXTreg(a) => todo!(),
                 Operation::NegB(a) => todo!(),
                 Operation::Neg(a) => todo!(),
                 Operation::Trap(a) => todo!(),
-                Operation::Ashr(a, b) => todo!(),
-                Operation::Shl(a, b) => todo!(),
-                Operation::Shr(a, b) => todo!(),
+                Operation::Ashr(a, b) => {
+                    let w = self.read_address_word::<0>(a)?;
+                    let s = self.read_address_word::<0>(b)? & 0b1111;
+
+                    let v = w << s;
+                }
+                Operation::Shl(a, b) => {
+                    let w = self.read_address_word::<0>(a)?;
+                    let s = self.read_address_word::<0>(b)? & 0b1111;
+
+                    let v = w << s;
+
+                    self.flags.e = false;
+                    self.flags.z = 0 == v;
+                    self.flags.v = false;
+                    self.flags.c = (1 << (16 - s)) & w != 0;
+                    self.flags.n = v >> 15 == 1;
+
+                    self.write_address_word::<0>(a, v)?;
+                }
+                Operation::Shr(a, b) => {
+                    let w = self.read_address_word::<0>(a)?;
+                    let s = self.read_address_word::<0>(b)? & 0b1111;
+
+                    let v = w >> s;
+
+                    self.flags.e = false;
+                    self.flags.z = 0 == v;
+                    self.flags.v = w << (16 - s) == 0;
+                    self.flags.c = (1 << s) & w != 0;
+                    self.flags.n = v >> 15 == 1;
+
+                    self.write_address_word::<0>(a, v)?;
+                }
                 Operation::Mul(a, b) => todo!(),
                 Operation::Mulu(a, b) => todo!(),
                 Operation::PRIOR(a, b) => todo!(),
@@ -682,11 +814,14 @@ impl Interpreter {
     }
 
     pub fn read_gpr_word(&self, gpr: u8) -> u16 {
-        self.read_word(self.gpr_address(gpr))
+        self.read_word(self.gpr_address_word(gpr))
     }
 
-    pub fn gpr_address(&self, gpr: u8) -> usize {
-        registers::CP::ADDRESS + ((gpr as usize & 0xF) * 2)
+    pub fn gpr_address_word(&self, gpr: u8) -> usize {
+        self.read_sfr_word::<registers::CP>() as usize + ((gpr as usize & 0xF) * 2)
+    }
+    pub fn gpr_address_byte(&self, gpr: u8) -> usize {
+        self.read_sfr_word::<registers::CP>() as usize + (gpr as usize & 0xF)
     }
 
     pub fn stack_push(&mut self, word: u16) {
@@ -694,13 +829,15 @@ impl Interpreter {
         let stkov = self.read_sfr_word::<registers::STKOV>();
 
         sp -= 2;
-        self.write_sfr_word::<registers::SP>(sp);
 
         // TODO: make sure stack pointer can only be set to a multiple of two
         // TODO: handle stack overflow/underflow trap
-        if sp == stkov {
+        if sp < stkov {
+            println!("STKOV: {:04X}", sp);
             todo!();
         }
+
+        self.write_sfr_word::<registers::SP>(sp);
 
         self.write_word(sp as usize, word);
     }
@@ -711,17 +848,18 @@ impl Interpreter {
 
         sp += 2;
 
-        self.write_sfr_word::<registers::SP>(sp);
-
-        if sp == stkun {
+        if sp > stkun {
+            println!("STKUN: {:04X}", sp);
             todo!();
         }
+
+        self.write_sfr_word::<registers::SP>(sp);
 
         self.read_word(sp as usize)
     }
 
     pub fn read_gpr_byte(&self, gpr: u8) -> u8 {
-        self.memory[self.read_sfr_word::<registers::CP>() as usize + (gpr as usize & 0xF)]
+        self.memory[self.gpr_address_byte(gpr)]
     }
 
     pub fn get_ip(&self) -> usize {
@@ -748,16 +886,23 @@ impl Interpreter {
     }
 
     pub fn get_dpp_address(&self, address: u16) -> usize {
-        let dpp = match address >> 14 {
-            0 => self.read_sfr_word::<registers::DPP0>(),
-            1 => self.read_sfr_word::<registers::DPP1>(),
-            2 => self.read_sfr_word::<registers::DPP2>(),
-            3 => self.read_sfr_word::<registers::DPP3>(),
-            _ => panic!(),
-        } as usize;
-        let addr = (address & 0x3FFF) as usize;
+        match self.ext_addr {
+            ExtAddr::Page(p) => ((p as usize & 0x3FF) << 14) & (address as usize & 0x3FFF),
+            ExtAddr::Seg(s) => ((s as usize) << 16) & address as usize,
+            ExtAddr::None => {
+                let dpp = match address >> 14 {
+                    0 => self.read_sfr_word::<registers::DPP0>(),
+                    1 => self.read_sfr_word::<registers::DPP1>(),
+                    2 => self.read_sfr_word::<registers::DPP2>(),
+                    3 => self.read_sfr_word::<registers::DPP3>(),
+                    _ => panic!(),
+                } as usize
+                    & 0x3FF; // keep only lower 10 bits
+                let addr = (address & 0x3FFF) as usize;
 
-        addr | (dpp << 14)
+                addr | (dpp << 14)
+            }
+        }
     }
 
     pub fn write_dpp_addressed_word(&mut self, address: u16, word: u16) {
@@ -768,11 +913,11 @@ impl Interpreter {
     }
 
     pub fn write_gpr_word(&mut self, gpr: u8, word: u16) {
-        let addr = self.gpr_address(gpr);
+        let addr = self.gpr_address_word(gpr);
         self.write_word(addr, word);
     }
     pub fn write_gpr_byte(&mut self, gpr: u8, byte: u8) {
-        let addr = self.gpr_address(gpr);
+        let addr = self.gpr_address_byte(gpr);
         self.write_byte(addr, byte);
     }
 
