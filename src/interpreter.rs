@@ -288,6 +288,9 @@ impl Interpreter {
     pub fn execute(&mut self) -> Result {
         let mut last = None;
         let mut repeat_count = 0;
+
+        let mut jumps = Vec::new();
+
         loop {
             let ip = self.get_ip();
             let instr = {
@@ -301,6 +304,10 @@ impl Interpreter {
             } else {
                 self.extr = false;
                 self.ext_addr = ExtAddr::None;
+            }
+
+            if ip == 0x778F {
+                panic!();
             }
 
             if Some(op) == last {
@@ -505,7 +512,9 @@ impl Interpreter {
                 }
 
                 Operation::DISWDT() => todo!(),
-                Operation::SRVWDT() => todo!(),
+                Operation::SRVWDT() => {
+                    // TODO: implement watchdog
+                }
 
                 Operation::EINIT() => {}
                 Operation::IDLE() => {}
@@ -519,6 +528,7 @@ impl Interpreter {
                             self.instruction_pointer = self
                                 .instruction_pointer
                                 .saturating_add_signed(r as i8 as i16 * 2);
+                            jumps.push(self.get_ip());
                         }
                     } else {
                         return Err(Error::BadArgs);
@@ -531,6 +541,7 @@ impl Interpreter {
                             self.instruction_pointer = self
                                 .instruction_pointer
                                 .saturating_add_signed(r as i8 as i16 * 2);
+                            jumps.push(self.get_ip());
                         }
                     } else {
                         return Err(Error::BadArgs);
@@ -542,6 +553,7 @@ impl Interpreter {
                             self.instruction_pointer = self
                                 .instruction_pointer
                                 .saturating_add_signed(r as i8 as i16 * 2);
+                            jumps.push(self.get_ip());
                         }
                     } else {
                         return Err(Error::BadArgs);
@@ -555,6 +567,7 @@ impl Interpreter {
                             self.instruction_pointer = self
                                 .instruction_pointer
                                 .saturating_add_signed(r as i8 as i16 * 2);
+                            jumps.push(self.get_ip());
                         }
                     } else {
                         return Err(Error::BadArgs);
@@ -565,6 +578,7 @@ impl Interpreter {
                     if let (Address::CC(cc), Address::Caddr(addr)) = (a, b) {
                         if self.flags.test_cc(cc) {
                             self.instruction_pointer = addr;
+                            jumps.push(self.get_ip());
                         }
                     } else {
                         return Err(Error::BadArgs);
@@ -574,6 +588,7 @@ impl Interpreter {
                     if let Address::CC(cc) = a {
                         if self.flags.test_cc(cc) {
                             self.instruction_pointer = self.read_address_word::<0>(b)?;
+                            jumps.push(self.get_ip());
                         }
                     } else {
                         return Err(Error::BadArgs);
@@ -585,6 +600,7 @@ impl Interpreter {
                         self.instruction_pointer = self
                             .instruction_pointer
                             .saturating_add_signed(r as i8 as i16);
+                        jumps.push(self.get_ip());
                     }
                 }
                 Operation::JmpS(a, b) => {
@@ -592,6 +608,7 @@ impl Interpreter {
                         self.instruction_pointer = addr;
                         // upper 8 bits of CSP are unused
                         self.write_sfr_word::<registers::CSP>(seg as u16);
+                        jumps.push(self.get_ip());
                     } else {
                         return Err(Error::BadArgs);
                     }
@@ -744,8 +761,24 @@ impl Interpreter {
                 }
                 Operation::AtEx(a) => todo!(),
 
-                Operation::CPLB(a) => todo!(),
-                Operation::CPL(a) => todo!(),
+                Operation::CPL(a) => {
+                    let av = self.read_address_word::<0>(a)?;
+                    self.write_address_word::<0>(a, !av)?;
+                    self.flags.e = av as i16 == i16::MIN;
+                    self.flags.z = !av == 0;
+                    self.flags.v = false;
+                    self.flags.c = false;
+                    self.flags.n = !av >> 15 == 1;
+                }
+                Operation::CPLB(a) => {
+                    let av = self.read_address_byte::<0>(a)?;
+                    self.write_address_byte::<0>(a, !av)?;
+                    self.flags.e = av as i8 == i8::MIN;
+                    self.flags.z = !av == 0;
+                    self.flags.v = false;
+                    self.flags.c = false;
+                    self.flags.n = !av >> 7 == 1;
+                }
                 Operation::Div(a) => todo!(),
                 Operation::Divl(a) => todo!(),
                 Operation::Divlu(a) => todo!(),
@@ -754,10 +787,19 @@ impl Interpreter {
                 Operation::Neg(a) => todo!(),
                 Operation::Trap(a) => todo!(),
                 Operation::Ashr(a, b) => {
-                    let w = self.read_address_word::<0>(a)?;
+                    let w = self.read_address_word::<0>(a)? as i16;
                     let s = self.read_address_word::<0>(b)? & 0b1111;
 
-                    let v = w << s;
+                    let v = w >> s;
+
+                    // TODO: Fix flag logic, use carry
+                    self.flags.e = false;
+                    self.flags.z = 0 == v;
+                    self.flags.v = s != 0 && w != 0;
+                    self.flags.c = (1 << (16 - s)) & w != 0;
+                    self.flags.n = v >> 15 == 1;
+
+                    self.write_address_word::<0>(a, v as u16)?;
                 }
                 Operation::Shl(a, b) => {
                     let w = self.read_address_word::<0>(a)?;
@@ -825,10 +867,8 @@ impl Interpreter {
     }
 
     pub fn stack_push(&mut self, word: u16) {
-        let mut sp = self.read_sfr_word::<registers::SP>();
+        let sp = self.read_sfr_word::<registers::SP>() - 2;
         let stkov = self.read_sfr_word::<registers::STKOV>();
-
-        sp -= 2;
 
         // TODO: make sure stack pointer can only be set to a multiple of two
         // TODO: handle stack overflow/underflow trap
@@ -843,17 +883,15 @@ impl Interpreter {
     }
 
     pub fn stack_pop(&mut self) -> u16 {
-        let mut sp = self.read_sfr_word::<registers::SP>();
+        let sp = self.read_sfr_word::<registers::SP>();
         let stkun = self.read_sfr_word::<registers::STKUN>();
-
-        sp += 2;
 
         if sp > stkun {
             println!("STKUN: {:04X}", sp);
             todo!();
         }
 
-        self.write_sfr_word::<registers::SP>(sp);
+        self.write_sfr_word::<registers::SP>(sp + 2);
 
         self.read_word(sp as usize)
     }
