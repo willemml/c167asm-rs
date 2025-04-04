@@ -344,3 +344,137 @@ instructions! {
     BFLDL(Bitoff, Mask8, Data8) = 0x0A
     BFLDH(Bitoff, Mask8, Data8) = 0x1A
 }
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct JumpInfo {
+    pub conditional: bool,
+    pub is_ret: bool,
+    pub is_call: bool,
+    pub rel: bool,
+    pub to: Option<Address>,
+    pub op: Operation,
+}
+
+impl Operation {
+    /// If op is a jump, returns generic jump information.
+    /// Returns non if op is not a jump.
+    pub fn jump_info(&self) -> Option<JumpInfo> {
+        match self {
+            Operation::CallR(a) => Some(JumpInfo {
+                conditional: false,
+                is_ret: false,
+                is_call: true,
+                rel: true,
+                to: Some(*a),
+                op: *self,
+            }),
+            Operation::RETP(_) | Operation::RET() | Operation::RETI() | Operation::RETS() => {
+                Some(JumpInfo {
+                    conditional: false,
+                    is_ret: true,
+                    is_call: false,
+                    rel: false,
+                    to: None,
+                    op: *self,
+                })
+            }
+            Operation::PCall(_, a) => Some(JumpInfo {
+                conditional: false,
+                is_ret: false,
+                is_call: true,
+                rel: false,
+                to: Some(*a),
+                op: *self,
+            }),
+            Operation::CallA(c, a) => Some(JumpInfo {
+                conditional: c != &Address::CC(ConditionCode::Unconditional),
+                is_ret: false,
+                is_call: true,
+                rel: false,
+                to: Some(*a),
+                op: *self,
+            }),
+            Operation::CallI(c, a) => Some(JumpInfo {
+                conditional: c != &Address::CC(ConditionCode::Unconditional),
+                is_ret: false,
+                is_call: true,
+                rel: false,
+                to: Some(*a),
+                op: *self,
+            }),
+            Operation::CallS(_, a) => Some(JumpInfo {
+                conditional: false,
+                is_ret: false,
+                is_call: true,
+                rel: false,
+                to: Some(*a),
+                op: *self,
+            }),
+            Operation::JB(_, a) => Some(JumpInfo {
+                conditional: false,
+                is_ret: false,
+                is_call: false,
+                rel: true,
+                to: Some(*a),
+                op: *self,
+            }),
+            Operation::JBC(_, a) => Some(JumpInfo {
+                conditional: false,
+                is_ret: false,
+                is_call: false,
+                rel: true,
+                to: Some(*a),
+                op: *self,
+            }),
+            Operation::JmpA(_, a) => Some(JumpInfo {
+                conditional: false,
+                is_ret: false,
+                is_call: false,
+                rel: false,
+                to: Some(*a),
+                op: *self,
+            }),
+            Operation::JmpI(_, a) => Some(JumpInfo {
+                conditional: false,
+                is_ret: false,
+                is_call: false,
+                rel: false,
+                to: Some(*a),
+                op: *self,
+            }),
+            Operation::JmpS(_, a) => Some(JumpInfo {
+                conditional: false,
+                is_ret: false,
+                is_call: false,
+                rel: false,
+                to: Some(*a),
+                op: *self,
+            }),
+            Operation::JNB(_, a) => Some(JumpInfo {
+                conditional: true,
+                is_ret: false,
+                is_call: false,
+                rel: true,
+                to: Some(*a),
+                op: *self,
+            }),
+            Operation::JNBS(_, a) => Some(JumpInfo {
+                conditional: true,
+                is_ret: false,
+                is_call: false,
+                rel: true,
+                to: Some(*a),
+                op: *self,
+            }),
+            Operation::JmpR(condition_code, a) => Some(JumpInfo {
+                conditional: condition_code != &ConditionCode::Unconditional,
+                is_ret: false,
+                is_call: false,
+                rel: true,
+                to: Some(Address::Rel(*a)),
+                op: *self,
+            }),
+            _ => None,
+        }
+    }
+}
