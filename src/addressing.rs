@@ -255,7 +255,7 @@ impl Display for Address {
             Address::Mask8(m) => write!(f, "#0b{:08b}", m),
             Address::Bitoff(a) => write!(f, "0x{:02X}", a),
             Address::Irang2(r) => write!(f, "{}", r),
-            Address::Rel(r) => write!(f, "{}", r),
+            Address::Rel(r) => write!(f, "{}", *r as i8),
             Address::Caddr(c) => write!(f, "0x{:04X}h", c),
             Address::Seg(s) => write!(f, "0x{:02X}", s),
             Address::Bitaddr(a, b) => write!(f, "*{:02X}h({})", a, b),
@@ -550,6 +550,27 @@ impl From<EXTSeq> for Address {
 impl From<Indirect16> for Address {
     fn from(value: Indirect16) -> Self {
         Self::Indirect16(value.0, value.1)
+    }
+}
+
+impl Address {
+    pub fn is_constant(&self) -> bool {
+        match self {
+            Address::Special(s) => s & 0b1000 == 0,
+
+            Address::Caddr(_)
+            | Address::Rel(_)
+            | Address::Mask8(_)
+            | Address::Pag10(_)
+            | Address::Irang2(_)
+            | Address::Seg(_)
+            | Address::Data16(_)
+            | Address::Data8(_)
+            | Address::Data4(_)
+            | Address::Data3(_) => true,
+
+            _ => false,
+        }
     }
 }
 

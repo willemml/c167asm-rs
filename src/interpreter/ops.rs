@@ -275,7 +275,7 @@ impl Interpreter {
             Operation::IDLE() => {}
             Operation::NOP() => {}
             Operation::PWRDN() => return Ok(OpResult::PowerDown),
-            Operation::SRST() => todo!(),
+            Operation::SRST() => return Ok(OpResult::Reset),
 
             Operation::JB(a, b) => {
                 if let Address::Rel(r) = b {
@@ -354,7 +354,7 @@ impl Interpreter {
                     // TODO: handle over/under flow
                     self.instruction_pointer = self
                         .instruction_pointer
-                        .saturating_add_signed(r as i8 as i16);
+                        .saturating_add_signed(r as i8 as i16 * 2);
                     return Ok(OpResult::Jump(self.get_ip()));
                 }
             }
@@ -428,7 +428,7 @@ impl Interpreter {
                     // TODO: handle over/under flow
                     self.instruction_pointer = self
                         .instruction_pointer
-                        .saturating_add_signed(r as i8 as i16);
+                        .saturating_add_signed(r as i8 as i16 * 2);
                 } else {
                     return Err(Error::BadArgs);
                 }

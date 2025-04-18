@@ -51,5 +51,5 @@ fn main() {
     registers::init_sfr(&mut interpreter.memory);
     registers::init_esfr(&mut interpreter.memory);
 
-    interpreter.execute().unwrap();
+    interpreter.flow().unwrap();
 }

@@ -12,11 +12,24 @@ macro_rules! instructions {
             Bset(Bitaddr),
         }
 
+        impl Operation {
+            pub fn args(self) -> Vec<Address> {
+                match self {
+                    Operation::JmpR(cc, n) => vec![cc.into(), Address::Rel(n)],
+                    Operation::Bclr(n) => vec![n.into()],
+                    Operation::Bset(n) => vec![n.into()],
+                    $(
+                      Self::$group($($arg),*) => vec![$($arg),*],
+                    )*
+                }
+            }
+        }
+
         impl std::fmt::Display for Operation {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 match self {
 
-                    Operation::JmpR(cc, n) => write!(f, "JMPR {:?}, {}", cc, n),
+                    Operation::JmpR(cc, n) => write!(f, "JMPR {:?}, {}", cc, *n as i8),
                     Operation::Bclr(n) => write!(f, "BCLR {:02X}h, {}", n.0, n.1),
                     Operation::Bset(n) => write!(f, "BSET {:02X}h, {}", n.0, n.1),
                     $(

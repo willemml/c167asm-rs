@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::num::Wrapping;
+use std::process::exit;
 
 mod memory;
 mod ops;
@@ -59,6 +61,7 @@ struct Flags {
 pub enum OpResult {
     Jump(usize),
     PowerDown,
+    Reset,
     Continue,
 }
 
@@ -85,6 +88,20 @@ impl Flags {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct Block {
+    pub start: usize,
+    pub end: usize,
+    pub branches: Vec<(usize, Instruction)>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BlockJumps {
+    pub start: usize,
+    pub end: usize,
+    pub branches: HashMap<usize, usize>,
+}
+
 impl Interpreter {
     pub fn new() -> Self {
         Self {
@@ -95,6 +112,147 @@ impl Interpreter {
             extr: false,
             ext_addr: ExtAddr::None,
         }
+    }
+
+    pub fn flow(&mut self) -> Result {
+        let mut starts = Vec::new();
+        let mut processed = Vec::new();
+        let mut todo = vec![self.next_block()?];
+
+        while !todo.is_empty() {
+            let current = todo.remove(todo.len() - 1);
+
+            starts.push(current.start);
+
+            let mut branches = HashMap::new();
+
+            for branch in current.branches.iter() {
+                self.do_op((*branch).1.into(), true)?;
+
+                let ip = self.get_ip();
+
+                branches.insert(branch.0, ip);
+
+                if starts.contains(&ip) {
+                    continue;
+                } else {
+                    starts.push(ip);
+                }
+
+                if let Ok(block) = self.next_block() {
+                    todo.push(block);
+                }
+            }
+
+            processed.push(BlockJumps {
+                branches,
+                start: current.start,
+                end: current.end,
+            });
+        }
+        self.write_sfr_word::<registers::DPP1>(0x204);
+        self.write_sfr_word::<registers::DPP2>(0x204);
+        self.write_sfr_word::<registers::DPP3>(0x204);
+        self.write_sfr_word::<registers::DPP0>(0x204);
+
+        for block in processed {
+            let mut ip = block.start;
+            if ip <= 0x800000 {
+                continue;
+            }
+            if ip >= 0x820000 && ip <= 0x820202 {
+                continue;
+            }
+            println!();
+            println!("==== {:06x} ====", ip);
+            while ip <= block.end {
+                let instr = {
+                    let mut slice = &self.memory[ip..ip + 4];
+                    if slice == [0, 0, 0, 0] {
+                        println!("--- zeros");
+                        break;
+                    }
+                    Instruction::read(&mut slice)?
+                };
+                let op = Operation::from(instr);
+                print!("{:06X}: {}", ip, op);
+                if op.jump_info().is_none() {
+                    self.instruction_pointer = ip as u16;
+                    self.write_sfr_word::<registers::CSP>((ip >> 16) as u16);
+                    match op {
+                        Operation::EXTo(_) | Operation::EXTreg(_) => {
+                            self.do_op(op, true)?;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(to) = block.branches.get(&ip) {
+                    println!(" ----> 0x{:06x}", to);
+                } else {
+                    println!();
+                    for a in op.args() {
+                        if let Address::Mem(m) = a {
+                            let addr = self.get_dpp_address(m);
+                            println!("  - {:06X}", addr);
+                            if [0x13E7A, 0x10FC8, 0x11B21, 0x1398C, 0x13974, 0x11B9A]
+                                .contains(&(addr & 0xFFFFF))
+                            {
+                                println!("!!!!!!!!!!!!!!!!!!!!FOUND!!!!!!!!!!!!!!!!!!!!")
+                            }
+                        }
+                    }
+                }
+                ip += instr.len();
+                if self.ext_count > 0 {
+                    self.ext_count -= 1;
+                } else {
+                    self.extr = false;
+                    self.ext_addr = ExtAddr::None;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn next_block(&mut self) -> Result<Block> {
+        let start = self.get_ip();
+        let mut end;
+        let mut branches = Vec::new();
+        loop {
+            let ip = self.get_ip();
+            let instr = {
+                let mut slice = &self.memory[ip..ip + 4];
+                Instruction::read(&mut slice)?
+            };
+            end = ip;
+            let op = Operation::from(instr);
+
+            match op {
+                Operation::SRST() | Operation::PWRDN() | Operation::IDLE() => break,
+                _ => {}
+            }
+
+            if let Some(ji) = op.jump_info() {
+                if !ji.conditional && ji.to.is_some_and(|a| a.is_constant()) && !ji.rel {
+                    branches.push((ip, instr));
+                }
+                if ji.is_ret {
+                    break;
+                }
+            }
+
+            if self.instruction_pointer >= u16::MAX - instr.len() as u16 {
+                break;
+            }
+            self.instruction_pointer += instr.len() as u16;
+        }
+
+        Ok(Block {
+            start,
+            end,
+            branches,
+        })
     }
 
     pub fn execute(&mut self) -> Result {
@@ -116,6 +274,7 @@ impl Interpreter {
                 Instruction::read(&mut slice)?
             };
             let op = Operation::from(instr);
+            println!("{:06X}: {}", ip, op);
 
             let mut repeat = None;
             let jump = if let Some(ji) = op.jump_info() {
@@ -137,34 +296,31 @@ impl Interpreter {
                 None
             };
 
-            if self.ext_count > 0 {
-                self.ext_count -= 1;
-            } else {
-                self.extr = false;
-                self.ext_addr = ExtAddr::None;
-            }
-
             // IP is always equal to the address of the instruction following a branch
             self.instruction_pointer += instr.len() as u16;
-
             match self.do_op(op, false)? {
                 OpResult::Jump(_) => {
                     if let Some(ji) = jump {
                         if let Some((c, o)) = repeat {
                             if c {
-                                self.instruction_pointer =
-                                    (o + Instruction::try_from(ji.op)?.len()) as u16;
-                                self.write_sfr_word::<registers::CP>((o >> 16) as u16);
-                            } else {
                                 self.do_op(ji.op, true)?;
+                                println!("forced");
+                            } else {
+                                // TODO: add instruction length
+                                self.instruction_pointer = (o & 0xFFFF) as u16;
+                                self.write_sfr_word::<registers::CSP>((o >> 16) as u16);
+                                println!("ignored");
                             }
-                            dbg!(ji);
                         } else {
-                            jumps.push((false, dbg!(ip), ji));
+                            jumps.push((false, ip, ji));
+                            println!("found");
                         }
                     }
                 }
-                OpResult::PowerDown => return Ok(()),
+                OpResult::PowerDown | OpResult::Reset => {
+                    self.instruction_pointer = 0;
+                    self.write_sfr_word::<registers::CSP>(0);
+                }
                 OpResult::Continue => {
                     if let Some(jump) = jump {
                         jumps.push((true, ip, jump))
@@ -204,33 +360,32 @@ impl Interpreter {
     }
 
     pub fn stack_push(&mut self, word: u16) {
-        let sp = self.read_sfr_word::<registers::SP>() - 2;
-        let stkov = self.read_sfr_word::<registers::STKOV>();
+        // let sp = self.read_sfr_word::<registers::SP>() - 2;
+        // let stkov = self.read_sfr_word::<registers::STKOV>();
 
-        // TODO: make sure stack pointer can only be set to a multiple of two
-        // TODO: handle stack overflow/underflow trap
-        if sp < stkov {
-            println!("STKOV: {:04X}", sp);
-            todo!();
-        }
+        // // TODO: make sure stack pointer can only be set to a multiple of two
+        // // TODO: handle stack overflow/underflow trap
+        // if sp < stkov {
+        //     println!("STKOV: {:04X}", sp);
+        // } else {
+        //     self.write_sfr_word::<registers::SP>(sp);
 
-        self.write_sfr_word::<registers::SP>(sp);
-
-        self.write_word(sp as usize, word);
+        //     self.write_word(sp as usize, word);
+        // }
     }
 
     pub fn stack_pop(&mut self) -> u16 {
-        let sp = self.read_sfr_word::<registers::SP>();
-        let stkun = self.read_sfr_word::<registers::STKUN>();
+        // let sp = self.read_sfr_word::<registers::SP>();
+        // let stkun = self.read_sfr_word::<registers::STKUN>();
 
-        if sp > stkun {
-            println!("STKUN: {:04X}", sp);
-            todo!();
-        }
-
-        self.write_sfr_word::<registers::SP>(sp + 2);
-
-        self.read_word(sp as usize)
+        // if sp > stkun {
+        //     println!("STKUN: {:04X}", sp);
+        //     0
+        // } else {
+        //     self.write_sfr_word::<registers::SP>(sp + 2);
+        //     self.read_word(sp as usize)
+        // }
+        0
     }
 
     pub fn read_gpr_byte(&self, gpr: u8) -> u8 {
